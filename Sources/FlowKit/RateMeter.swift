@@ -52,9 +52,10 @@ public struct RateMeter: Sendable, Equatable {
     }
 }
 
-/// The cumulative counts Synesthesia shows rates for.
+/// The cumulative counts Synesthesia shows rates for. `heldBack` isn't one of the daemon's: it's what a filter took
+/// and neither passed on nor turned into errors.
 public enum CountKind: String, CaseIterable, Sendable, Hashable {
-    case received, handled, emitted, dropped, filtered, failed, expired, refused
+    case received, handled, emitted, passed, heldBack, dropped, filtered, failed, expired, refused
 }
 
 /// A rate for each kind of count, for one module.

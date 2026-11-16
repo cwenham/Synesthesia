@@ -4,15 +4,16 @@ import MeepClient
 /// Keeps one ``MeepHost`` up to date: connects to it, lists its pipelines, follows each live one's counts, fetches
 /// graphs when they change, and reconnects when the host goes away.
 ///
-/// This is the first, simplest form of the subscription planner in the design (section 4): every live pipeline at
-/// one rate. Later it will ask only for what's on screen, within a budget for each host.
+/// This is the first, simplest form of the subscription planner in the design (section 4): every live pipeline once a
+/// second, and those a view is showing in detail (``MeepPipeline/watchers``) several times a second. Later it will
+/// ask only for what's on screen, within a budget for each host.
 @MainActor
 public final class HostSession {
     public let host: MeepHost
     private let connect: @Sendable () async throws -> any HostLink
     private let settings: Settings
     private var running: Task<Void, Never>?
-    private var following: [String: (token: Int, task: Task<Void, Never>)] = [:]
+    private var following: [String: (token: Int, every: Duration, task: Task<Void, Never>)] = [:]
     private var nextToken = 0
     private let clock = ContinuousClock()
     private let epoch: ContinuousClock.Instant
@@ -20,13 +21,19 @@ public final class HostSession {
     public struct Settings: Sendable {
         /// How often each pipeline's counts come.
         public var statsEvery: Duration = .seconds(1)
+        /// How often the counts come for a pipeline a view is showing in detail.
+        public var watchedStatsEvery: Duration = .milliseconds(200)
         /// How often the list of pipelines is asked for again.
         public var listEvery: Duration = .seconds(2)
         /// How long to wait before trying an unreachable host again.
         public var retryAfter: Duration = .seconds(3)
 
-        public init(statsEvery: Duration = .seconds(1), listEvery: Duration = .seconds(2), retryAfter: Duration = .seconds(3)) {
+        public init(
+            statsEvery: Duration = .seconds(1), watchedStatsEvery: Duration = .milliseconds(200),
+            listEvery: Duration = .seconds(2), retryAfter: Duration = .seconds(3)
+        ) {
             self.statsEvery = statsEvery
+            self.watchedStatsEvery = watchedStatsEvery
             self.listEvery = listEvery
             self.retryAfter = retryAfter
         }
@@ -78,34 +85,47 @@ public final class HostSession {
         stopFollowing()
     }
 
-    /// Lists pipelines every so often, following each live one, until the link fails.
+    /// Lists pipelines every so often, following each live one, until the link fails. Between lists it looks a few
+    /// times a second for pipelines that a view has started or stopped showing, to change how often their counts come.
     private func follow(_ link: any HostLink) async throws {
+        var listed: ContinuousClock.Instant?
         while !Task.isCancelled {
-            host.apply(try await link.pipelines())
-            let live = Set(host.pipelines.filter { $0.state.isLive }.map(\.name))
-            for name in following.keys where !live.contains(name) {
-                following.removeValue(forKey: name)?.task.cancel()
-            }
-            for name in live where following[name] == nil {
-                nextToken += 1
-                let token = nextToken
-                following[name] = (token, Task { await followStats(of: name, over: link, token: token) })
-            }
-            for pipeline in host.pipelines where pipeline.graph == nil && !pipeline.state.isLive && pipeline.graphVersion == nil {
-                // An ended pipeline's final counts, once, so it doesn't show empty.
-                if let detail = try? await link.pipeline(pipeline.name) {
-                    pipeline.apply(detail, at: now)
-                    await fetchGraph(of: pipeline, over: link)
+            if listed.map({ clock.now - $0 >= settings.listEvery }) ?? true {
+                listed = clock.now
+                host.apply(try await link.pipelines())
+                for pipeline in host.pipelines where pipeline.graph == nil && !pipeline.state.isLive && pipeline.graphVersion == nil {
+                    // An ended pipeline's final counts, once, so it doesn't show empty.
+                    if let detail = try? await link.pipeline(pipeline.name) {
+                        pipeline.apply(detail, at: now)
+                        await fetchGraph(of: pipeline, over: link)
+                    }
                 }
             }
-            try await Task.sleep(for: settings.listEvery)
+            followLive(over: link)
+            try await Task.sleep(for: min(settings.listEvery, .milliseconds(250)))
         }
         throw CancellationError()
     }
 
-    private func followStats(of name: String, over link: any HostLink, token: Int) async {
+    /// Starts and stops following pipelines' counts as they come and go, at the rate each needs.
+    private func followLive(over link: any HostLink) {
+        let live = Dictionary(uniqueKeysWithValues: host.pipelines.filter { $0.state.isLive }.map {
+            ($0.name, $0.watchers > 0 ? settings.watchedStatsEvery : settings.statsEvery)
+        })
+        for (name, entry) in following where live[name] != entry.every {
+            following.removeValue(forKey: name)
+            entry.task.cancel()
+        }
+        for (name, every) in live where following[name] == nil {
+            nextToken += 1
+            let token = nextToken
+            following[name] = (token, every, Task { await followStats(of: name, every: every, over: link, token: token) })
+        }
+    }
+
+    private func followStats(of name: String, every: Duration, over link: any HostLink, token: Int) async {
         do {
-            for try await event in link.stats(name, every: settings.statsEvery) {
+            for try await event in link.stats(name, every: every) {
                 guard let pipeline = host.pipeline(name) else { continue }
                 switch event {
                 case .stats(let detail):

@@ -2,6 +2,7 @@ import ContinuumKit
 import MeepClient
 import Observation
 import Simulation
+import Stage
 import SwiftUI
 import SynesthesiaUI
 
@@ -13,7 +14,8 @@ struct SynesthesiaApp: App {
     var body: some Scene {
         WindowGroup("Synesthesia") {
             ContinuumView(continuum: model.continuum)
-                .frame(minWidth: 760, minHeight: 420)
+                .environment(\.canvasSurface, MacCanvas.provider)
+                .frame(minWidth: 760, minHeight: 520)
                 .task {
                     model.start()
                     model.showSimulatedHost(showsSimulatedHost)
@@ -23,8 +25,27 @@ struct SynesthesiaApp: App {
         .commands {
             CommandGroup(after: .sidebar) {
                 Toggle("Show Simulated Host", isOn: $showsSimulatedHost)
+                Divider()
+                ZoomCommands()
             }
         }
+    }
+}
+
+/// Zooming the canvas in the focused window.
+struct ZoomCommands: View {
+    @FocusedValue(\.pipelineStage) private var stage
+
+    var body: some View {
+        Button("Zoom In") { stage?.step(zoomingIn: true) }
+            .keyboardShortcut("=", modifiers: .command)
+            .disabled(stage == nil)
+        Button("Zoom Out") { stage?.step(zoomingIn: false) }
+            .keyboardShortcut("-", modifiers: .command)
+            .disabled(stage == nil)
+        Button("Zoom to Fit") { stage?.fit() }
+            .keyboardShortcut("0", modifiers: .command)
+            .disabled(stage == nil)
     }
 }
 

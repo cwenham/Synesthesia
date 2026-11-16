@@ -115,10 +115,16 @@ public final class MeepPipeline: Identifiable {
     public internal(set) var restarts = 0
     public internal(set) var warnings: [String] = []
     public internal(set) var modules: [MeepModule] = []
+    /// The links between its modules, from its graph, with what each has carried.
+    public internal(set) var links: [MeepLink] = []
     /// Its graph, once fetched: links, roles and where each module is written.
     public internal(set) var graph: PipelineGraph?
     /// The graph version its latest counts belong to.
     public internal(set) var graphVersion: Int?
+    /// How many views are showing it in detail, such as a canvas. While any are, its counts come more often.
+    public var watchers = 0
+    /// The latest counts for its links, kept for links its graph hasn't got yet: the counts can arrive first.
+    @ObservationIgnored private var linkCounts: (counts: [String: LinkDetail], time: Double)?
 
     public nonisolated var id: String { "\(host)/\(name)" }
     public var address: MeepAddress { MeepAddress(host: host, pipeline: name) }
@@ -130,6 +136,10 @@ public final class MeepPipeline: Identifiable {
 
     public func module(_ key: String) -> MeepModule? {
         modules.first { $0.key == key }
+    }
+
+    public func link(_ key: String) -> MeepLink? {
+        links.first { $0.key == key }
     }
 
     /// Messages a second received by all its modules, or 0 once it has ended.
@@ -173,6 +183,13 @@ public final class MeepPipeline: Identifiable {
             kept.append(model)
         }
         modules = kept
+
+        if let counted = detail.links {
+            linkCounts = (Dictionary(counted.map { ($0.key, $0) }, uniquingKeysWith: { $1 }), time)
+            for link in counted {
+                self.link(link.key)?.apply(link, at: time)
+            }
+        }
     }
 
     /// Takes a new version of the graph, giving modules their lasting keys.
@@ -187,6 +204,67 @@ public final class MeepPipeline: Identifiable {
             kept.append(model)
         }
         modules = kept
+        // A link kept through a reload keeps its object, and its counts, as the daemon keeps them.
+        links = graph.links.map { graphLink in
+            if let model = link(graphLink.key) {
+                model.apply(graphLink)
+                return model
+            }
+            let model = MeepLink(key: graphLink.key)
+            model.apply(graphLink)
+            if let linkCounts, let counted = linkCounts.counts[graphLink.key] {
+                model.apply(counted, at: linkCounts.time)
+            }
+            return model
+        }
+    }
+}
+
+/// A link between two modules: a wire on the canvas.
+@MainActor @Observable
+public final class MeepLink: Identifiable {
+    /// `from>to`, from the modules' keys, so it lasts as they do.
+    public let key: String
+    public internal(set) var from = ""
+    public internal(set) var to = ""
+    /// Which of the receiving module's inputs it is, counting from 1.
+    public internal(set) var input = 1
+    public internal(set) var port = LinkPort.main
+    public internal(set) var types: [String] = []
+    /// Whether the daemon counts what it carries. Daemons before Meep2 ee030d7 don't.
+    public internal(set) var isCounted = false
+    /// Messages it has carried, errors included.
+    public internal(set) var carried: Int64 = 0
+    /// How many of ``carried`` were errors.
+    public internal(set) var errors: Int64 = 0
+    /// Messages a second, errors included.
+    public var rate: Double { carriedMeter.rate }
+    /// Errors a second.
+    public var errorRate: Double { errorMeter.rate }
+
+    private var carriedMeter = RateMeter()
+    private var errorMeter = RateMeter()
+
+    public nonisolated var id: String { key }
+
+    init(key: String) {
+        self.key = key
+    }
+
+    func apply(_ link: GraphLink) {
+        from = link.from
+        to = link.to
+        input = link.input
+        port = link.linkPort
+        types = link.types
+    }
+
+    func apply(_ detail: LinkDetail, at time: Double) {
+        isCounted = true
+        carried = detail.carried
+        errors = detail.errors
+        carriedMeter.update(detail.carried, at: time)
+        errorMeter.update(detail.errors, at: time)
     }
 }
 
@@ -240,8 +318,8 @@ extension ModuleStats {
     /// The cumulative counts, by kind, for rates.
     public var byKind: [CountKind: Int64] {
         [
-            .received: received, .handled: handled, .emitted: emitted, .dropped: dropped,
-            .filtered: filtered, .failed: failed, .expired: expired, .refused: refused,
+            .received: received, .handled: handled, .emitted: emitted, .passed: passed, .heldBack: heldBack,
+            .dropped: dropped, .filtered: filtered, .failed: failed, .expired: expired, .refused: refused,
         ]
     }
 }

@@ -2,8 +2,8 @@ import ContinuumKit
 import MeepClient
 import SwiftUI
 
-/// The Continuum as lists and tables: hosts and their pipelines on the left, the selected pipeline's modules and
-/// their live counts on the right. Step 1's plain view, before the canvas.
+/// The Continuum: hosts and their pipelines on the left; on the right, the selected host's pipelines, or the selected
+/// pipeline drawn live on the canvas above a table of its modules' counts.
 public struct ContinuumView: View {
     let continuum: Continuum
     @State private var selection: MeepAddress?
@@ -143,29 +143,44 @@ struct PipelineDetailView: View {
     let host: MeepHost?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Breadcrumb(parts: ["Continuum", host?.title ?? pipeline.host, pipeline.name])
-            if let host, !host.isReachable {
-                Label("\(host.title) can't be reached, so these are the counts from when it last could. \(host.statusText)",
-                      systemImage: "wifi.exclamationmark")
-                    .foregroundStyle(.orange)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Breadcrumb(parts: ["Continuum", host?.title ?? pipeline.host, pipeline.name])
+                if let host, !host.isReachable {
+                    Label("\(host.title) can't be reached, so these are the counts from when it last could. \(host.statusText)",
+                          systemImage: "wifi.exclamationmark")
+                        .foregroundStyle(.orange)
+                }
+                HStack(spacing: 16) {
+                    Label(pipeline.state.rawValue, systemImage: pipeline.state.symbol).foregroundStyle(pipeline.state.tint)
+                    if let started = pipeline.started {
+                        Text("Started \(started.formatted(date: .abbreviated, time: .standard))").foregroundStyle(.secondary)
+                    }
+                    if pipeline.restarts > 0 {
+                        Text("Restarted \(pipeline.restarts)×").foregroundStyle(.orange)
+                    }
+                    if let reason = pipeline.reason {
+                        Text(reason).foregroundStyle(.secondary).lineLimit(2).help(reason)
+                    }
+                    Spacer()
+                    Text(pipeline.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        .help(pipeline.path).textSelection(.enabled)
+                }
             }
-            HStack(spacing: 16) {
-                Label(pipeline.state.rawValue, systemImage: pipeline.state.symbol).foregroundStyle(pipeline.state.tint)
-                if let started = pipeline.started {
-                    Text("Started \(started.formatted(date: .abbreviated, time: .standard))").foregroundStyle(.secondary)
-                }
-                if pipeline.restarts > 0 {
-                    Text("Restarted \(pipeline.restarts)×").foregroundStyle(.orange)
-                }
-                if let reason = pipeline.reason {
-                    Text(reason).foregroundStyle(.secondary).lineLimit(2).help(reason)
-                }
+            .padding([.horizontal, .top])
+            .padding(.bottom, 10)
+            #if os(macOS)
+            VSplitView {
+                PipelineCanvas(pipeline: pipeline, host: host)
+                    .id(pipeline.id)
+                    .frame(minHeight: 240, idealHeight: 480, maxHeight: .infinity)
+                ModuleTable(modules: pipeline.modules, current: host?.isReachable ?? false)
+                    .frame(minHeight: 90, idealHeight: 170, maxHeight: .infinity)
             }
-            Text(pipeline.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            ModuleTable(modules: pipeline.modules, current: host?.isReachable ?? false)
+            #else
+            PipelineCanvas(pipeline: pipeline, host: host).id(pipeline.id)
+            #endif
         }
-        .padding()
     }
 }
 

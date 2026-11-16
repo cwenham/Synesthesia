@@ -14,6 +14,9 @@ let package = Package(
         .library(name: "FlowKit", targets: ["FlowKit"]),
         .library(name: "ContinuumKit", targets: ["ContinuumKit"]),
         .library(name: "Simulation", targets: ["Simulation"]),
+        .library(name: "LayoutKit", targets: ["LayoutKit"]),
+        .library(name: "Stage", targets: ["Stage"]),
+        .library(name: "MetalStage", targets: ["MetalStage"]),
         .library(name: "SynesthesiaUI", targets: ["SynesthesiaUI"]),
         .executable(name: "SynesthesiaMac", targets: ["SynesthesiaMac"]),
     ],
@@ -28,14 +31,25 @@ let package = Package(
         .target(name: "ContinuumKit", dependencies: ["MeepClient", "FlowKit"]),
         // Pretend hosts, for tests and for building the host and mesh levels without real machines.
         .target(name: "Simulation", dependencies: ["MeepClient"]),
+        // Layouts in Swift (Q3): layered for a pipeline; later packing, force and edge layouts, and pins.
+        .target(name: "LayoutKit"),
+        // The scene the canvas draws, independent of the renderer: tiles, wires, text, particles, the camera and
+        // hit-testing, built from the model.
+        .target(name: "Stage", dependencies: ["ContinuumKit", "LayoutKit", "FlowKit", "MeepClient"]),
+        // The Metal renderer of the stage, shared by the Mac and iPad.
+        .target(name: "MetalStage", dependencies: ["Stage"]),
         // SwiftUI shared by the Mac and iPad apps.
-        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit"]),
+        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage"]),
         // The Mac app: its windows, menus and the hosts it starts with.
-        .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation"]),
+        .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation", "Stage", "MetalStage"]),
 
         .testTarget(name: "TransportTests", dependencies: ["Transport"]),
         .testTarget(name: "MeepClientTests", dependencies: ["MeepClient"], resources: [.copy("Fixtures")]),
         .testTarget(name: "FlowKitTests", dependencies: ["FlowKit"]),
         .testTarget(name: "ContinuumKitTests", dependencies: ["ContinuumKit", "Simulation"]),
+        .testTarget(name: "LayoutKitTests", dependencies: ["LayoutKit"]),
+        .testTarget(name: "StageTests", dependencies: ["Stage", "ContinuumKit", "Simulation", "MeepClient"]),
+        .testTarget(name: "MetalStageTests", dependencies: ["MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
+        .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
     ]
 )

@@ -71,13 +71,16 @@ public struct PipelineDetail: Codable, Sendable, Equatable {
     public var modules: [ModuleDetail]
     /// The version of its graph, so a client drawing it can tell when to ask for the graph again. Nil until loaded.
     public var graphVersion: Int?
+    /// What each link of its graph has carried, keyed as the graph's links are. Nil until loaded, and from daemons
+    /// older than Meep2 ee030d7.
+    public var links: [LinkDetail]?
     public var ended: Date?
     public var reason: String?
     public var restarts: Int
 
     public init(
         name: String, path: String, state: PipelineState, started: Date, modules: [ModuleDetail],
-        graphVersion: Int? = nil, ended: Date? = nil, reason: String? = nil, restarts: Int = 0
+        graphVersion: Int? = nil, links: [LinkDetail]? = nil, ended: Date? = nil, reason: String? = nil, restarts: Int = 0
     ) {
         self.name = name
         self.path = path
@@ -85,9 +88,33 @@ public struct PipelineDetail: Codable, Sendable, Equatable {
         self.started = started
         self.modules = modules
         self.graphVersion = graphVersion
+        self.links = links
         self.ended = ended
         self.reason = reason
         self.restarts = restarts
+    }
+}
+
+/// One link of a running pipeline, and what it has carried since the pipeline started.
+public struct LinkDetail: Codable, Sendable, Equatable {
+    /// `from>to`, as the graph's link has it.
+    public var key: String
+    /// Messages that went along it, errors included. Like the modules' counts, it only goes up.
+    public var carried: Int64
+    /// How many of ``carried`` were errors.
+    public var errors: Int64
+
+    public init(key: String, carried: Int64, errors: Int64 = 0) {
+        self.key = key
+        self.carried = carried
+        self.errors = errors
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        carried = try container.decode(Int64.self, forKey: .carried)
+        errors = try container.decodeIfPresent(Int64.self, forKey: .errors) ?? 0
     }
 }
 
@@ -116,8 +143,13 @@ public struct ModuleDetail: Codable, Sendable, Equatable {
 public struct ModuleStats: Codable, Sendable, Equatable {
     public var received: Int64
     public var handled: Int64
+    /// New messages and errors it emitted, not counting those it passed on unchanged.
     public var emitted: Int64
+    /// Messages it passed on unchanged, as a filter does with those it keeps. From Meep2 ee030d7; 0 before.
+    public var passed: Int64
     public var dropped: Int64
+    /// Messages that stopped here because its options exclude them, such as other messages reaching an errors-only
+    /// module. Not what a filter holds back: that's ``heldBack``.
     public var filtered: Int64
     public var failed: Int64
     public var restarts: Int64
@@ -127,12 +159,14 @@ public struct ModuleStats: Codable, Sendable, Equatable {
     public var queued: Int64
 
     public init(
-        received: Int64 = 0, handled: Int64 = 0, emitted: Int64 = 0, dropped: Int64 = 0, filtered: Int64 = 0,
-        failed: Int64 = 0, restarts: Int64 = 0, expired: Int64 = 0, refused: Int64 = 0, queued: Int64 = 0
+        received: Int64 = 0, handled: Int64 = 0, emitted: Int64 = 0, passed: Int64 = 0, dropped: Int64 = 0,
+        filtered: Int64 = 0, failed: Int64 = 0, restarts: Int64 = 0, expired: Int64 = 0, refused: Int64 = 0,
+        queued: Int64 = 0
     ) {
         self.received = received
         self.handled = handled
         self.emitted = emitted
+        self.passed = passed
         self.dropped = dropped
         self.filtered = filtered
         self.failed = failed
@@ -141,6 +175,22 @@ public struct ModuleStats: Codable, Sendable, Equatable {
         self.refused = refused
         self.queued = queued
     }
+
+    /// Reads any count the daemon leaves out as 0, so a daemon from before a count was added still reads.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func count(_ key: CodingKeys) throws -> Int64 { try c.decodeIfPresent(Int64.self, forKey: key) ?? 0 }
+        self.init(
+            received: try count(.received), handled: try count(.handled), emitted: try count(.emitted),
+            passed: try count(.passed), dropped: try count(.dropped), filtered: try count(.filtered),
+            failed: try count(.failed), restarts: try count(.restarts), expired: try count(.expired),
+            refused: try count(.refused), queued: try count(.queued)
+        )
+    }
+
+    /// Messages a filter took and neither passed on nor turned into errors: what it held back. Meep2 has no count
+    /// for this, so it's worked out; it means something only for a filter.
+    public var heldBack: Int64 { max(0, handled - passed - emitted) }
 
     public static let zero = ModuleStats()
 }

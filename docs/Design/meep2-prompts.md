@@ -26,6 +26,8 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 | 7 | Flow evidence and the boundary | 8, the boundary |
 | 8 | The iPad: LSP over the daemon, mutual TLS | 11, the iPad |
 
+**Done:** 1, in Meep2 6d496dd; 2, in Meep2 ee030d7, which also counts each link's errors and each module's `passed`.
+
 Prompts 1 and 2 touch the same files (`Contracts.cs`, the daemon, the runtime's stats), so run them one after the other, not side by side.
 
 ---

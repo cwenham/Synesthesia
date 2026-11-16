@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import MeepClient
 
-/// The fixtures are the daemon's own replies, captured from Meep2 at 6d496dd with a test pipeline running, with
-/// paths made anonymous.
+/// The fixtures are the daemon's own replies, with paths made anonymous: `busy` captured from Meep2 at 6d496dd, and
+/// `shapes` (two timers merging, filters, a fan-out and handled errors) at ee030d7, with counts for each link.
 struct ContractTests {
     private func fixture(_ name: String) throws -> Data {
         let url = try #require(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
@@ -46,6 +46,36 @@ struct ContractTests {
         #expect(graph.modules[1].parameters.first?.text == "msg.Count % 3 != 0")
         #expect(graph.modules[1].span.startLine == 3)
         #expect(graph.modules[3].modifiers.first?.name == "errors")
+    }
+
+    @Test func linksReadWithWhatTheyCarried() throws {
+        let detail = try MeepJSON.decoder.decode(PipelineDetail.self, from: fixture("shapes-detail"))
+        let graph = try MeepJSON.decoder.decode(PipelineGraph.self, from: fixture("shapes-graph"))
+        let links = try #require(detail.links)
+        #expect(links.map(\.key) == graph.links.map(\.key))
+        let carried = Dictionary(uniqueKeysWithValues: links.map { ($0.key, $0) })
+        // Two timers merge into Keep, on inputs 1 and 2.
+        #expect(graph.links.filter { $0.to == "m3" }.map(\.input) == [1, 2])
+        #expect(carried["m1>m3"]!.carried + carried["m2>m3"]!.carried == detail.modules[2].counts.received)
+        // Risky's errors go down both its wires: past the WriteLine on the main one, and into the @errors one.
+        #expect(carried["m5>m7"]!.carried == carried["m5>m7"]!.errors)
+        #expect(carried["m5>m6"]!.errors == carried["m5>m7"]!.errors)
+        #expect(carried["m5>m6"]!.carried - carried["m5>m6"]!.errors == detail.modules[5].counts.received)
+    }
+
+    @Test func aFiltersCountsAddUp() throws {
+        let detail = try MeepJSON.decoder.decode(PipelineDetail.self, from: fixture("shapes-detail"))
+        let keep = detail.modules[2].counts
+        #expect(keep.passed > 0)
+        #expect(keep.heldBack > 0, "Keep holds back every seventh tick")
+        #expect(keep.passed + keep.emitted + keep.heldBack == keep.handled)
+    }
+
+    @Test func countsADaemonLeavesOutReadAsZero() throws {
+        let stats = try MeepJSON.decoder.decode(ModuleStats.self, from: Data(#"{"received":3,"handled":3,"emitted":1}"#.utf8))
+        #expect(stats == ModuleStats(received: 3, handled: 3, emitted: 1))
+        let link = try MeepJSON.decoder.decode(LinkDetail.self, from: Data(#"{"key":"m1>m2","carried":4}"#.utf8))
+        #expect(link.errors == 0)
     }
 
     @Test(arguments: [

@@ -36,14 +36,33 @@ struct HostSessionTests {
         session.start()
         defer { session.stop() }
 
-        try await waitUntil { host.pipelines.count == 3 && host.pipeline("orders")?.graph != nil }
+        try await waitUntil { host.pipelines.count == 4 && host.pipeline("orders")?.graph != nil }
         #expect(host.status == .connected)
         let orders = try #require(continuum.pipeline(at: MeepAddress("meep://sim/orders")!))
-        #expect(orders.modules.map(\.key) == ["m1", "m2", "m3", "m4", "m5"])
-        #expect(orders.modules.map(\.role) == [.inlet, .filter, .step, .outlet, .outlet])
+        #expect(orders.modules.map(\.key) == ["m1", "m2", "m3", "m4", "m5", "m6"])
+        #expect(orders.modules.map(\.role) == [.inlet, .filter, .step, .outlet, .outlet, .outlet])
+        #expect(orders.links.map(\.key) == ["m1>m2", "m2>m3", "m3>m4", "m3>m5", "m3>m6"])
+        #expect(orders.link("m3>m6")?.port == .errors)
 
-        try await waitUntil { orders.throughput > 0 }
+        try await waitUntil { orders.throughput > 0 && (orders.link("m2>m3")?.rate ?? 0) > 0 }
         #expect(continuum.module(at: MeepAddress("meep://sim/orders/m1")!)?.label == "Orders")
+        #expect(orders.links.filter { !$0.isCounted }.isEmpty)
+    }
+
+    @Test func aWatchedPipelinesCountsComeMoreOften() async throws {
+        let continuum = Continuum()
+        let host = continuum.add(host: "sim", kind: .simulated)
+        let link = SimulatedHost(name: "sim", latency: .milliseconds(1))
+        let session = HostSession(host: host, settings: .init(statsEvery: .seconds(10), watchedStatsEvery: .milliseconds(20), listEvery: .milliseconds(50))) { link }
+        session.start()
+        defer { session.stop() }
+        try await waitUntil { host.pipeline("ticker")?.links.first?.isCounted == true }
+        let ticker = try #require(host.pipeline("ticker"))
+        let before = ticker.links[0].carried
+        try await Task.sleep(for: .milliseconds(1500))
+        #expect(ticker.links[0].carried == before, "unwatched, its counts come every 10 seconds")
+        ticker.watchers += 1
+        try await waitUntil { ticker.links[0].carried > before }
     }
 
     @Test func aHostThatGoesAwayShowsNoRates() async throws {
@@ -57,7 +76,7 @@ struct HostSessionTests {
         session.stop()
         host.status = .unreachable("gone")
         #expect(host.throughput == 0)
-        #expect(host.pipelines.count == 3, "its pipelines stay, as last seen")
+        #expect(host.pipelines.count == 4, "its pipelines stay, as last seen")
     }
 
     @Test func anUnreachableHostSaysSoAndKeepsTrying() async throws {
@@ -95,6 +114,28 @@ struct HostSessionTests {
         #expect(pipeline.modules.map(\.key) == ["m1", "m3", "m2"])
         #expect(pipeline.module("m2") === writer)
         #expect(writer?.number == 3)
+    }
+}
+
+struct SimulationTests {
+    @Test(arguments: PipelineSpec.demo.map(\.name))
+    func countsAddUpAsMeepsDo(pipeline: String) throws {
+        let spec = try #require(PipelineSpec.demo.first { $0.name == pipeline })
+        let modules = spec.counts(at: 60)
+        let links = Dictionary(uniqueKeysWithValues: spec.linkCounts(at: 60).map { ($0.key, $0) })
+        #expect(links.keys.sorted() == spec.graph.links.map(\.key).sorted())
+        for (index, module) in spec.modules.enumerated() where !module.from.isEmpty {
+            let counts = modules[index].counts
+            let into = module.from.compactMap { links["m\($0 + 1)>m\(index + 1)"] }
+            let messages = into.reduce(0) { $0 + $1.carried - $1.errors }
+            let errors = into.reduce(0) { $0 + $1.errors }
+            // What reaches it is what it received, plus what it dropped, give or take rounding.
+            let reaching = module.errorsOnly ? errors : messages
+            #expect(abs(reaching - counts.received - counts.dropped) <= Int64(module.from.count) + 1, "\(pipeline) m\(index + 1)")
+            if module.role == .filter {
+                #expect(abs(counts.passed + counts.emitted + counts.heldBack - counts.handled) <= 2)
+            }
+        }
     }
 }
 
