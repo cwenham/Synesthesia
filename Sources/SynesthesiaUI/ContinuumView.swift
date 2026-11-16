@@ -5,16 +5,16 @@ import SwiftUI
 /// The Continuum: hosts and their pipelines on the left; on the right, the selected host's pipelines, or the selected
 /// pipeline drawn live on the canvas above a table of its modules' counts.
 public struct ContinuumView: View {
-    let continuum: Continuum
-    @State private var selection: MeepAddress?
+    @Bindable var workspace: Workspace
+    private var continuum: Continuum { workspace.continuum }
 
-    public init(continuum: Continuum) {
-        self.continuum = continuum
+    public init(workspace: Workspace) {
+        self.workspace = workspace
     }
 
     public var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List(selection: $workspace.selection) {
                 ForEach(continuum.hosts) { host in
                     Section {
                         HostRow(host: host)
@@ -29,15 +29,16 @@ public struct ContinuumView: View {
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         } detail: {
-            if let selection, let pipeline = continuum.pipeline(at: selection) {
+            if let selection = workspace.selection, let pipeline = continuum.pipeline(at: selection) {
                 PipelineDetailView(pipeline: pipeline, host: continuum.host(selection.host))
-            } else if let selection, let host = continuum.host(selection.host) {
-                HostDetailView(host: host, selection: $selection)
+            } else if let selection = workspace.selection, let host = continuum.host(selection.host) {
+                HostDetailView(host: host, selection: $workspace.selection)
             } else {
                 ContentUnavailableView("Nothing selected", systemImage: "point.3.connected.trianglepath.dotted",
                                        description: Text("Choose a host or a pipeline."))
             }
         }
+        .environment(\.workspace, workspace)
     }
 }
 

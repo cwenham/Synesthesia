@@ -110,7 +110,7 @@ public struct Flow: Sendable {
             let place = path.point(at: along)
             var tint = color
             if fading { tint.w *= Float(max(0, 1 - along / max(path.length, 1))) }
-            return StageParticle(position: place.point, direction: place.direction, color: tint, size: 2.6, style: .message)
+            return StageParticle(position: place.point, direction: place.direction, color: tint, size: 2.6, style: .message, owner: path.id)
         }
         return (stream, particles)
     }

@@ -15,6 +15,30 @@ public struct CanvasSurfaceProvider {
 
 extension EnvironmentValues {
     @Entry public var canvasSurface: CanvasSurfaceProvider?
+    @Entry public var workspace: Workspace?
+}
+
+/// The window's state that isn't the Continuum itself: what's selected, and the stage the canvas is drawing. Tools,
+/// such as the MCP server's, read and change it as the person does.
+@MainActor @Observable
+public final class Workspace {
+    public let continuum: Continuum
+    /// The host or pipeline selected in the sidebar.
+    public var selection: MeepAddress?
+    /// The stage the canvas is drawing, while a pipeline is showing.
+    public private(set) var stage: PipelineStage?
+
+    public init(continuum: Continuum) {
+        self.continuum = continuum
+    }
+
+    func showing(_ stage: PipelineStage) {
+        self.stage = stage
+    }
+
+    func hidden(_ stage: PipelineStage) {
+        if self.stage === stage { self.stage = nil }
+    }
 }
 
 extension FocusedValues {
@@ -27,6 +51,7 @@ extension FocusedValues {
 struct PipelineCanvas: View {
     @State private var stage: PipelineStage
     @Environment(\.canvasSurface) private var surface
+    @Environment(\.workspace) private var workspace
 
     init(pipeline: MeepPipeline, host: MeepHost?) {
         _stage = State(initialValue: PipelineStage(pipeline: pipeline, host: host))
@@ -60,8 +85,14 @@ struct PipelineCanvas: View {
             }
             .overlay(alignment: .bottomTrailing) { ZoomButtons(stage: stage).padding(10) }
         }
-        .onAppear { stage.pipeline.watchers += 1 }
-        .onDisappear { stage.pipeline.watchers -= 1 }
+        .onAppear {
+            stage.pipeline.watchers += 1
+            workspace?.showing(stage)
+        }
+        .onDisappear {
+            stage.pipeline.watchers -= 1
+            workspace?.hidden(stage)
+        }
         .focusedSceneValue(\.pipelineStage, stage)
     }
 }

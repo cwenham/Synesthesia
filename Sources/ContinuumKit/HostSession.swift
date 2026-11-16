@@ -65,7 +65,8 @@ public final class HostSession {
 
     private func run() async {
         while !Task.isCancelled {
-            if host.status != .connected { host.status = .connecting }
+            // A host that can't be reached keeps saying why while it's tried again, rather than flickering.
+            if case .unreachable = host.status {} else if host.status != .connected { host.status = .connecting }
             var link: (any HostLink)?
             do {
                 let opened = try await connect()

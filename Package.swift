@@ -18,7 +18,9 @@ let package = Package(
         .library(name: "Stage", targets: ["Stage"]),
         .library(name: "MetalStage", targets: ["MetalStage"]),
         .library(name: "SynesthesiaUI", targets: ["SynesthesiaUI"]),
+        .library(name: "Assistant", targets: ["Assistant"]),
         .executable(name: "SynesthesiaMac", targets: ["SynesthesiaMac"]),
+        .executable(name: "synesthesia-mcp", targets: ["SynesthesiaMCPBridge"]),
     ],
     targets: [
         // Byte streams over Unix sockets (and later TCP with TLS and tunnels), and WebSockets on top of them.
@@ -38,10 +40,14 @@ let package = Package(
         .target(name: "Stage", dependencies: ["ContinuumKit", "LayoutKit", "FlowKit", "MeepClient"]),
         // The Metal renderer of the stage, shared by the Mac and iPad.
         .target(name: "MetalStage", dependencies: ["Stage"]),
+        // The tools Claude uses, written once (design, section 8), and the MCP server that offers them.
+        .target(name: "Assistant", dependencies: ["ContinuumKit", "Stage", "FlowKit", "MeepClient", "Transport"]),
         // SwiftUI shared by the Mac and iPad apps.
         .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage"]),
         // The Mac app: its windows, menus and the hosts it starts with.
-        .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation", "Stage", "MetalStage"]),
+        .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation", "Stage", "MetalStage", "Assistant", "Transport"]),
+        // synesthesia-mcp, in the app bundle: joins an MCP client's standard input and output to the app's socket.
+        .executableTarget(name: "SynesthesiaMCPBridge", dependencies: ["Transport"]),
 
         .testTarget(name: "TransportTests", dependencies: ["Transport"]),
         .testTarget(name: "MeepClientTests", dependencies: ["MeepClient"], resources: [.copy("Fixtures")]),
@@ -50,6 +56,7 @@ let package = Package(
         .testTarget(name: "LayoutKitTests", dependencies: ["LayoutKit"]),
         .testTarget(name: "StageTests", dependencies: ["Stage", "ContinuumKit", "Simulation", "MeepClient"]),
         .testTarget(name: "MetalStageTests", dependencies: ["MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
+        .testTarget(name: "AssistantTests", dependencies: ["Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient"]),
         .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
     ]
 )

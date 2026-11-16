@@ -6,12 +6,15 @@ cd "$(dirname "$0")/.."
 
 config=${1:-release}
 swift build -c "$config" --product SynesthesiaMac
+swift build -c "$config" --product synesthesia-mcp
 bin_path=$(swift build -c "$config" --show-bin-path)
 
 app=.build/Synesthesia.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_path/SynesthesiaMac" "$app/Contents/MacOS/Synesthesia"
+# The MCP bridge, for clients such as Claude Code that start a server as a program (design, section 8).
+cp "$bin_path/synesthesia-mcp" "$app/Contents/MacOS/synesthesia-mcp"
 # Resource bundles SwiftPM made for the targets, if any.
 for bundle in "$bin_path"/*.bundle(N); do
     ditto "$bundle" "$app/Contents/Resources/$(basename "$bundle")"
@@ -50,5 +53,6 @@ PLIST
 
 # Signed to run on this Mac, outside the sandbox (Q10): it opens the daemon's socket in ~/.meep, and will start
 # meep lsp and ssh. A Developer ID signature and notarisation come when it's shared.
+codesign --force --sign - --identifier com.synesthesia.mcp "$app/Contents/MacOS/synesthesia-mcp" >/dev/null
 codesign --force --sign - --identifier com.synesthesia.mac "$app" >/dev/null
 echo "Built $app"

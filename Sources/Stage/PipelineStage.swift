@@ -204,7 +204,7 @@ public final class PipelineStage {
             tileFlows[key] = flows
 
             if module.counts.queued > 0 {
-                pile(module.counts.queued, at: inlet, color: tile.color.with(alpha: current ? 0.9 : 0.4), into: &snapshot)
+                pile(module.counts.queued, at: inlet, color: tile.color.with(alpha: current ? 0.9 : 0.4), owner: "\(key).queued", into: &snapshot)
             }
 
             snapshot.tiles.append(StageTile(
@@ -366,7 +366,7 @@ public final class PipelineStage {
     }
 
     /// Messages waiting at a module, heaped on the wire at its input: one dot each up to 8, then more slowly.
-    private func pile(_ queued: Int64, at inlet: CGPoint, color: StageColor, into snapshot: inout StageSnapshot) {
+    private func pile(_ queued: Int64, at inlet: CGPoint, color: StageColor, owner: String, into snapshot: inout StageSnapshot) {
         let dots = Self.pileSize(for: queued)
         let perRow = 5
         for index in 0..<dots {
@@ -374,7 +374,7 @@ public final class PipelineStage {
             let column = index % perRow
             let x = inlet.x - 9 - CGFloat(column) * 5.4 - CGFloat(row) * 2.7
             let y = inlet.y - CGFloat(row) * 4.6
-            snapshot.overParticles.append(StageParticle(position: CGPoint(x: x, y: y), color: color, size: 2.1, style: .message))
+            snapshot.overParticles.append(StageParticle(position: CGPoint(x: x, y: y), color: color, size: 2.1, style: .message, owner: owner))
         }
     }
 
@@ -391,17 +391,17 @@ public final class PipelineStage {
         let x = face.minX
         var y = face.maxY + Theme.tileDepth + Theme.labelGap
         if camera.scale * Theme.titleFont.size >= 4.5 {
-            snapshot.texts.append(StageText(tile.title, at: CGPoint(x: x, y: y), font: Theme.titleFont, color: current ? Theme.title : Theme.detail))
+            snapshot.texts.append(StageText(tile.title, at: CGPoint(x: x, y: y), font: Theme.titleFont, color: current ? Theme.title : Theme.detail, tile: module.key))
         }
         y += Theme.lineHeights[1]
         guard camera.scale * Theme.detailFont.size >= 5.5 else { return }
-        snapshot.texts.append(StageText(tile.detail, at: CGPoint(x: x, y: y), font: Theme.detailFont, color: Theme.detail))
+        snapshot.texts.append(StageText(tile.detail, at: CGPoint(x: x, y: y), font: Theme.detailFont, color: Theme.detail, tile: module.key))
         y += Theme.lineHeights[2]
         guard current else { return }
         var rate = StageFormat.rate(module.role == .source || module.counts.received == 0 && module.counts.emitted > 0
             ? module.rates[.emitted] : module.rates[.received])
         if module.counts.queued > 0 { rate += ", \(StageFormat.count(module.counts.queued)) queued" }
-        snapshot.texts.append(StageText(rate, at: CGPoint(x: x, y: y), font: Theme.rateFont, color: tile.color))
+        snapshot.texts.append(StageText(rate, at: CGPoint(x: x, y: y), font: Theme.rateFont, color: tile.color, tile: module.key))
     }
 
     // MARK: Pointer and gestures
@@ -478,6 +478,27 @@ public final class PipelineStage {
 
     /// The camera now, for tests and overlays.
     public var currentCamera: Camera { camera }
+
+    /// The size of the view it was last drawn in, in points.
+    public var currentViewSize: CGSize { viewSize }
+
+    /// Shows a module: selects its tile and eases the camera to centre it, close enough to read.
+    @discardableResult
+    public func show(_ key: String) -> Bool {
+        guard let tile = tiles[key] else { return false }
+        selection = [key]
+        let middle = CGPoint(x: tile.frame.minX + tile.size.width / 2, y: tile.frame.minY + tile.frame.height / 2)
+        let target = Camera(center: middle, scale: min(max((cameraEasing?.to ?? camera).scale, 1), Camera.maximumScale))
+        cameraMoved = true
+        cameraEasing = Easing(from: camera, to: target, start: time)
+        return true
+    }
+
+    /// The modules it has tiles for, by key, in the order they're written.
+    public var tileKeys: [String] { order }
+
+    /// Whether it has been laid out, so it has tiles to show.
+    public var isLaidOut: Bool { !tiles.isEmpty }
 
     /// Where a tile's face is shown, in view points.
     public func viewFrame(of key: String) -> CGRect? {

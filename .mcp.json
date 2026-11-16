@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "synesthesia": {
+      "type": "stdio",
+      "command": ".build/Synesthesia.app/Contents/MacOS/synesthesia-mcp",
+      "args": []
+    }
+  }
+}

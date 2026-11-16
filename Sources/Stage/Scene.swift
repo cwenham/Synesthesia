@@ -167,13 +167,19 @@ public struct StageParticle: Sendable, Equatable {
     public var color: StageColor
     public var size: CGFloat
     public var style: ParticleStyle
+    /// What it belongs to: a wire's or flow's id, such as `m1>m2` or `m3.dropped`, or `m3.queued`.
+    public var owner: String
 
-    public init(position: CGPoint, direction: CGVector = CGVector(dx: 1, dy: 0), color: StageColor, size: CGFloat, style: ParticleStyle) {
+    public init(
+        position: CGPoint, direction: CGVector = CGVector(dx: 1, dy: 0), color: StageColor, size: CGFloat, style: ParticleStyle,
+        owner: String = ""
+    ) {
         self.position = position
         self.direction = direction
         self.color = color
         self.size = size
         self.style = style
+        self.owner = owner
     }
 }
 
@@ -199,12 +205,15 @@ public struct StageText: Sendable, Equatable {
     public var origin: CGPoint
     public var font: StageFont
     public var color: StageColor
+    /// The tile it labels, if any.
+    public var tile: String?
 
-    public init(_ string: String, at origin: CGPoint, font: StageFont, color: StageColor) {
+    public init(_ string: String, at origin: CGPoint, font: StageFont, color: StageColor, tile: String? = nil) {
         self.string = string
         self.origin = origin
         self.font = font
         self.color = color
+        self.tile = tile
     }
 }
 
