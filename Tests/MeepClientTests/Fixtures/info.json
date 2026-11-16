@@ -1,0 +1,1 @@
+{"version":"1.0.0","processId":4242,"socket":"/Users/example/.meep/daemon/meep.sock","capabilities":["observe","inject","control"],"pipelines":["busy","slow"]}
