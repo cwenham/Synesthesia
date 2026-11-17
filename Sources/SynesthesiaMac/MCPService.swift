@@ -1,5 +1,6 @@
 import AppKit
 import Assistant
+import CodeEditing
 import ContinuumKit
 import Foundation
 import QuartzCore
@@ -32,6 +33,14 @@ final class AppViewer: Viewer {
         configuration.activates = false
         NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration)
     }
+
+    func document(for pipeline: MeepPipeline) -> MeeplangDocument? {
+        workspace.document(for: pipeline)
+    }
+
+    var showsText: Bool { workspace.showsText }
+
+    var language: LanguageService? { workspace.language }
 
     func canvasImage() -> CGImage? {
         guard let stage, let renderer = MacCanvas.renderer, stage.currentViewSize.width > 0 else { return nil }

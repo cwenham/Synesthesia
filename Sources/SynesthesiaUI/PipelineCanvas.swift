@@ -15,30 +15,8 @@ public struct CanvasSurfaceProvider {
 
 extension EnvironmentValues {
     @Entry public var canvasSurface: CanvasSurfaceProvider?
+    @Entry public var codeTextSurface: CodeTextSurfaceProvider?
     @Entry public var workspace: Workspace?
-}
-
-/// The window's state that isn't the Continuum itself: what's selected, and the stage the canvas is drawing. Tools,
-/// such as the MCP server's, read and change it as the person does.
-@MainActor @Observable
-public final class Workspace {
-    public let continuum: Continuum
-    /// The host or pipeline selected in the sidebar.
-    public var selection: MeepAddress?
-    /// The stage the canvas is drawing, while a pipeline is showing.
-    public private(set) var stage: PipelineStage?
-
-    public init(continuum: Continuum) {
-        self.continuum = continuum
-    }
-
-    func showing(_ stage: PipelineStage) {
-        self.stage = stage
-    }
-
-    func hidden(_ stage: PipelineStage) {
-        if self.stage === stage { self.stage = nil }
-    }
 }
 
 extension FocusedValues {
@@ -49,13 +27,9 @@ extension FocusedValues {
 /// A pipeline drawn live: its modules as tiles, links as wires, particles from its counts. Hovering shows the
 /// numbers behind what's drawn.
 struct PipelineCanvas: View {
-    @State private var stage: PipelineStage
+    let stage: PipelineStage
     @Environment(\.canvasSurface) private var surface
     @Environment(\.workspace) private var workspace
-
-    init(pipeline: MeepPipeline, host: MeepHost?) {
-        _stage = State(initialValue: PipelineStage(pipeline: pipeline, host: host))
-    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -127,9 +101,9 @@ struct HoverCard: View {
         VStack(alignment: .leading, spacing: 6) {
             switch hit {
             case .tile(let key):
-                if let module = stage.pipeline.module(key) { moduleCard(module) }
+                if let module = stage.module(key) { moduleCard(module) }
             case .wire(let key):
-                if let link = stage.pipeline.link(key) { wireCard(link) }
+                if let link = stage.link(key) { wireCard(link) }
             }
         }
         .font(.callout)
@@ -140,8 +114,8 @@ struct HoverCard: View {
         .environment(\.colorScheme, .dark)
     }
 
-    @ViewBuilder private func moduleCard(_ module: MeepModule) -> some View {
-        let graph = stage.pipeline.graph?.modules.first { $0.key == module.key }
+    @ViewBuilder private func moduleCard(_ module: StageModule) -> some View {
+        let graph = module.graph
         Text(module.label).font(.headline)
         Text(describe(module)).foregroundStyle(.secondary)
         if let graph, !graph.parameters.isEmpty {
@@ -152,6 +126,19 @@ struct HoverCard: View {
             Text("\((graph.span.file as NSString).lastPathComponent), line \(graph.span.startLine)").font(.caption).foregroundStyle(.secondary)
         }
         Divider()
+        if module.isBeingEdited {
+            Text("Being edited: its lines don't load yet, so this is how it was.").font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if module.isNew {
+            Text("Not running yet. Save the text to run it; a daemon watching the file reloads it.").font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            counts(of: module)
+        }
+    }
+
+    @ViewBuilder private func counts(of module: StageModule) -> some View {
         let current = stage.isCurrent
         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 2) {
             ForEach(rows(for: module), id: \.name) { row in
@@ -165,17 +152,20 @@ struct HoverCard: View {
         if !current { Text("Not current: these are the counts when last seen.").font(.caption).foregroundStyle(.orange) }
     }
 
-    @ViewBuilder private func wireCard(_ link: MeepLink) -> some View {
-        let from = stage.pipeline.module(link.from)?.label ?? link.from
-        let to = stage.pipeline.module(link.to)?.label ?? link.to
+    @ViewBuilder private func wireCard(_ shown: StageLink) -> some View {
+        let from = stage.module(shown.from)?.label ?? shown.from
+        let to = stage.module(shown.to)?.label ?? shown.to
         Text("\(from) → \(to)").font(.headline)
-        Text(link.port == .errors ? "Errors only (@errors)" : link.input > 1 ? "Into input \(link.input)" : "Messages, and errors going past")
+        Text(shown.port == .errors ? "Errors only (@errors)" : shown.input > 1 ? "Into input \(shown.input)" : "Messages, and errors going past")
             .foregroundStyle(.secondary)
-        if !link.types.isEmpty {
-            Text(link.types.joined(separator: ", ")).font(.caption.monospaced()).foregroundStyle(.secondary)
+        if !shown.types.isEmpty {
+            Text(shown.types.joined(separator: ", ")).font(.caption.monospaced()).foregroundStyle(.secondary)
         }
         Divider()
-        if link.isCounted {
+        if shown.isNew {
+            Text("Not running yet: it carries nothing until the text is saved and loaded.").font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if let link = shown.live, link.isCounted {
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 2) {
                 GridRow {
                     Text("Carried").foregroundStyle(.secondary)
@@ -198,7 +188,7 @@ struct HoverCard: View {
         }
     }
 
-    private func describe(_ module: MeepModule) -> String {
+    private func describe(_ module: StageModule) -> String {
         var parts = [module.verb]
         if let role = module.role { parts.append(role.rawValue) }
         let inflections = module.inflections.filter { $0 != module.verb }
@@ -212,20 +202,20 @@ struct HoverCard: View {
         var rate: Double?
     }
 
-    private func rows(for module: MeepModule) -> [Row] {
+    private func rows(for module: StageModule) -> [Row] {
         let c = module.counts
         var rows: [Row] = [
-            Row(name: "Received", count: c.received, rate: module.rates[.received]),
-            Row(name: "Emitted", count: c.emitted, rate: module.rates[.emitted]),
-            Row(name: "Passed on", count: c.passed, rate: module.rates[.passed]),
+            Row(name: "Received", count: c.received, rate: module.rate(.received)),
+            Row(name: "Emitted", count: c.emitted, rate: module.rate(.emitted)),
+            Row(name: "Passed on", count: c.passed, rate: module.rate(.passed)),
         ]
-        if module.role == .filter { rows.append(Row(name: "Held back", count: c.heldBack, rate: module.rates[.heldBack])) }
+        if module.role == .filter { rows.append(Row(name: "Held back", count: c.heldBack, rate: module.rate(.heldBack))) }
         rows += [
-            Row(name: "Filtered", count: c.filtered, rate: module.rates[.filtered]),
-            Row(name: "Failed", count: c.failed, rate: module.rates[.failed]),
-            Row(name: "Refused", count: c.refused, rate: module.rates[.refused]),
-            Row(name: "Dropped", count: c.dropped, rate: module.rates[.dropped]),
-            Row(name: "Expired", count: c.expired, rate: module.rates[.expired]),
+            Row(name: "Filtered", count: c.filtered, rate: module.rate(.filtered)),
+            Row(name: "Failed", count: c.failed, rate: module.rate(.failed)),
+            Row(name: "Refused", count: c.refused, rate: module.rate(.refused)),
+            Row(name: "Dropped", count: c.dropped, rate: module.rate(.dropped)),
+            Row(name: "Expired", count: c.expired, rate: module.rate(.expired)),
             Row(name: "Queued now", count: c.queued, rate: nil),
         ]
         return rows.filter { $0.count != 0 || $0.name == "Received" && module.role != .source }

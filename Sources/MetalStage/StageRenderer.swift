@@ -300,7 +300,7 @@ struct TileInstance {
         halfSize = SIMD2(Float(tile.frame.width / 2), Float(tile.frame.height / 2))
         flash = tile.flash
         shape = tile.shape.rawValue
-        flags = (tile.isHovered ? 1 : 0) | (tile.isSelected ? 2 : 0) | (tile.isDimmed ? 4 : 0)
+        flags = (tile.isHovered ? 1 : 0) | (tile.isSelected ? 2 : 0) | (tile.isDimmed ? 4 : 0) | (tile.isGhost ? 8 : 0)
         depth = Float(Theme.tileDepth)
     }
 }

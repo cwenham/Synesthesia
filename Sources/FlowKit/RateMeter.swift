@@ -78,3 +78,43 @@ public struct RateSet: Sendable, Equatable {
         meters[kind]?.rate ?? 0
     }
 }
+
+/// A rate's last minute or so, one sample a second, oldest first: what a sparkline draws.
+public struct RateHistory: Sendable, Equatable {
+    /// How many seconds it keeps.
+    public let capacity: Int
+    public private(set) var samples: [Double] = []
+    private var second: Int?
+
+    public init(capacity: Int = 60) {
+        self.capacity = capacity
+    }
+
+    /// Takes the rate at `time`, in seconds on a steady clock. Readings within the same second replace each other;
+    /// seconds without one take the reading before, so the line doesn't dip where readings were sparse.
+    public mutating func record(_ rate: Double, at time: Double) {
+        let now = Int(time.rounded(.down))
+        defer { second = now }
+        guard let second, now >= second else {
+            samples = [rate]
+            return
+        }
+        if now == second, !samples.isEmpty {
+            samples[samples.count - 1] = rate
+            return
+        }
+        let skipped = now - second - 1
+        if skipped >= capacity {
+            samples = [rate]
+            return
+        }
+        if let last = samples.last, skipped > 0 { samples += Array(repeating: last, count: skipped) }
+        samples.append(rate)
+        if samples.count > capacity { samples.removeFirst(samples.count - capacity) }
+    }
+
+    public mutating func reset() {
+        samples = []
+        second = nil
+    }
+}

@@ -16,6 +16,13 @@ public protocol HostLink: Sendable {
     /// One pipeline's graph.
     func graph(_ name: String) async throws -> PipelineGraph
 
+    /// The text a pipeline runs: its file as loaded or last reloaded, with any edits made through the API since.
+    func source(_ name: String) async throws -> SourceText
+
+    /// Loads a pipeline's file again and applies the changes, keeping matched modules' state. Fails, leaving it
+    /// running as it was, when the file doesn't load.
+    func reload(_ name: String) async throws
+
     /// A pipeline's counts every so often, and notices when its graph changes, until it ends or the stream is
     /// dropped. A restarted pipeline's counts start again from zero.
     func stats(_ name: String, every interval: Duration) -> AsyncThrowingStream<StatsEvent, any Error>

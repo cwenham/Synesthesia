@@ -1,0 +1,119 @@
+{
+ "jsonrpc": "2.0",
+ "id": 8,
+ "result": {
+  "isIncomplete": false,
+  "items": [
+   {
+    "label": "#include",
+    "kind": 14,
+    "detail": "keyword"
+   },
+   {
+    "label": "#plugin",
+    "kind": 14,
+    "detail": "keyword"
+   },
+   {
+    "label": "Batch",
+    "kind": 3,
+    "detail": "step: Batch"
+   },
+   {
+    "label": "Classify",
+    "kind": 3,
+    "detail": "step: Classify"
+   },
+   {
+    "label": "Distribute",
+    "kind": 3,
+    "detail": "router: Distribute"
+   },
+   {
+    "label": "Enumerate",
+    "kind": 3,
+    "detail": "step: Enumerate"
+   },
+   {
+    "label": "Extract",
+    "kind": 3,
+    "detail": "step: Extract"
+   },
+   {
+    "label": "Fetch",
+    "kind": 3,
+    "detail": "step: HTTP, File"
+   },
+   {
+    "label": "Forget",
+    "kind": 3,
+    "detail": "step: Forget"
+   },
+   {
+    "label": "Interval",
+    "kind": 3,
+    "detail": "source: Interval"
+   },
+   {
+    "label": "Learn",
+    "kind": 3,
+    "detail": "step: Learn"
+   },
+   {
+    "label": "Listen",
+    "kind": 3,
+    "detail": "inlet: HTTP, TCP, WebSocket"
+   },
+   {
+    "label": "Read",
+    "kind": 3,
+    "detail": "source: Read"
+   },
+   {
+    "label": "Save",
+    "kind": 3,
+    "detail": "outlet: Save"
+   },
+   {
+    "label": "Send",
+    "kind": 3,
+    "detail": "outlet: Reply, Broadcast, WebSocket, TCP, HTTP"
+   },
+   {
+    "label": "Tap",
+    "kind": 3,
+    "detail": "tap: Tap"
+   },
+   {
+    "label": "Where",
+    "kind": 3,
+    "detail": "filter: Where"
+   },
+   {
+    "label": "WriteLine",
+    "kind": 3,
+    "detail": "outlet: WriteLine"
+   },
+   {
+    "label": "Zip",
+    "kind": 3,
+    "detail": "step: Zip"
+   },
+   {
+    "label": "const",
+    "kind": 14,
+    "detail": "keyword"
+   },
+   {
+    "label": "defaults",
+    "kind": 14,
+    "detail": "keyword"
+   },
+   {
+    "label": "template",
+    "kind": 14,
+    "detail": "keyword"
+   }
+  ]
+ }
+}

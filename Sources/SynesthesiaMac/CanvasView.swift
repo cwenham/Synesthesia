@@ -97,8 +97,13 @@ final class CanvasMTKView: MTKView, MTKViewDelegate {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         dragged = false
-        if event.clickCount == 2, stage.hit(at: location(of: event)) == nil {
-            stage.fit()
+        if event.clickCount == 2 {
+            // The background fits the pipeline; a tile opens its text beside the canvas.
+            switch stage.hit(at: location(of: event)) {
+            case nil: stage.fit()
+            case .tile(let key)?: stage.requestText(at: key)
+            case .wire?: break
+            }
         }
     }
 

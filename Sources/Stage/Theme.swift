@@ -37,6 +37,8 @@ public enum Theme {
     public static let wire = StageColor(hex: 0x3A4254)
     public static let errorWire = StageColor(hex: 0x6B2C36)
     public static let dimmed = StageColor(hex: 0x4A4E58)
+    /// A module written in lines being mended, while the text doesn't load: white, unlike any role's colour.
+    public static let editing = StageColor(hex: 0xF4F6FA)
 
     public static let title = StageColor(hex: 0xE8EBF0)
     public static let detail = StageColor(hex: 0x8C93A3)

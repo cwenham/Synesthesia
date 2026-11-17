@@ -1,0 +1,19 @@
+{
+ "jsonrpc": "2.0",
+ "id": 6,
+ "result": {
+  "resultId": "3",
+  "edits": [
+   {
+    "start": 56,
+    "deleteCount": 44,
+    "data": [
+     4,
+     9,
+     5,
+     0
+    ]
+   }
+  ]
+ }
+}

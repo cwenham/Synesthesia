@@ -10,7 +10,7 @@ public actor SimulatedHost: HostLink {
     public let name: String
     /// How long each answer takes.
     public var latency: Duration
-    private let pipelineSpecs: [PipelineSpec]
+    private var pipelineSpecs: [PipelineSpec]
     private let clock = ContinuousClock()
     private let epoch: ContinuousClock.Instant
     private let started: Date
@@ -54,12 +54,42 @@ public actor SimulatedHost: HostLink {
         return try spec(name).graph
     }
 
+    /// Replaces a pipeline with `spec`, as a reload would, giving its graph the next version.
+    public func reload(_ name: String, as spec: PipelineSpec) {
+        guard let index = pipelineSpecs.firstIndex(where: { $0.name == name }) else { return }
+        var changed = spec
+        changed.version = pipelineSpecs[index].version + 1
+        pipelineSpecs[index] = changed
+    }
+
+    public func source(_ name: String) async throws -> SourceText {
+        try await answer()
+        let spec = try spec(name)
+        guard let text = spec.text else {
+            throw HostError.refused(status: 404, message: "\(name) is simulated, so it has no Meeplang.", details: [])
+        }
+        return SourceText(path: spec.path, text: text)
+    }
+
+    public func reload(_ name: String) async throws {
+        try await answer()
+        _ = try spec(name)
+        throw HostError.refused(status: 403, message: "A simulated host only lets you observe.", details: [])
+    }
+
     public nonisolated func stats(_ name: String, every interval: Duration) -> AsyncThrowingStream<StatsEvent, any Error> {
         AsyncThrowingStream { continuation in
             let ticking = Task {
                 do {
+                    var version: Int?
                     while !Task.isCancelled {
-                        try await continuation.yield(.stats(self.pipeline(name)))
+                        let detail = try await self.pipeline(name)
+                        // A reload is announced, as the daemon announces it, before the counts that follow it.
+                        if let graphVersion = detail.graphVersion, version != nil, graphVersion != version {
+                            continuation.yield(.graph(GraphNotice(version: graphVersion, reason: "reload")))
+                        }
+                        version = detail.graphVersion
+                        continuation.yield(.stats(detail))
                         try await Task.sleep(for: interval)
                     }
                 } catch {
@@ -94,6 +124,10 @@ public struct PipelineSpec: Sendable {
     public var name: String
     public var path: String
     public var modules: [ModuleSpec]
+    /// The Meeplang it runs, if it has any; the demo pipelines don't, since their verbs are made up.
+    public var text: String?
+    /// Its graph's version, which counts up with each reload.
+    public var version = 1
 
     /// One module, and how it treats what reaches it.
     public struct ModuleSpec: Sendable {
@@ -133,10 +167,11 @@ public struct PipelineSpec: Sendable {
         }
     }
 
-    public init(name: String, modules: [ModuleSpec]) {
+    public init(name: String, modules: [ModuleSpec], path: String? = nil, text: String? = nil) {
         self.name = name
-        path = "/simulated/\(name).meep"
+        self.path = path ?? "/simulated/\(name).meep"
         self.modules = modules
+        self.text = text
     }
 
     /// The graph a daemon would give for it.
@@ -157,7 +192,7 @@ public struct PipelineSpec: Sendable {
                 )
             }
         }
-        return PipelineGraph(name: name, path: path, version: 1, modules: graphModules, links: links)
+        return PipelineGraph(name: name, path: path, version: version, modules: graphModules, links: links)
     }
 
     private func label(_ index: Int) -> String {

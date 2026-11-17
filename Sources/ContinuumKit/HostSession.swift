@@ -55,6 +55,7 @@ public final class HostSession {
     public func stop() {
         running?.cancel()
         running = nil
+        host.link = nil
         stopFollowing()
     }
 
@@ -73,6 +74,7 @@ public final class HostSession {
                 link = opened
                 host.info = try await opened.info()
                 host.status = .connected
+                host.link = opened
                 try await follow(opened)
             } catch is CancellationError {
                 break
@@ -80,6 +82,7 @@ public final class HostSession {
                 host.status = .unreachable(error.localizedDescription)
             }
             stopFollowing()
+            host.link = nil
             await link?.close()
             try? await Task.sleep(for: settings.retryAfter)
         }

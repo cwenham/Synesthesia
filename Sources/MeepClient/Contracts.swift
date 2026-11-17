@@ -369,6 +369,22 @@ public struct GraphSpan: Codable, Sendable, Equatable {
     }
 }
 
+/// The text a running pipeline runs from, from `GET /pipelines/{name}/source`.
+public struct SourceText: Codable, Sendable, Equatable {
+    /// The file it came from.
+    public var path: String
+    /// Its text now: the file as loaded or last reloaded, with any edits made through the API since.
+    public var text: String
+    /// Whether edits made through the API make it differ from the file as loaded.
+    public var edited: Bool
+
+    public init(path: String, text: String, edited: Bool = false) {
+        self.path = path
+        self.text = text
+        self.edited = edited
+    }
+}
+
 /// A pipeline's graph has a new version.
 public struct GraphNotice: Codable, Sendable, Equatable {
     public var version: Int

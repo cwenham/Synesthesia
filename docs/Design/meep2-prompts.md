@@ -26,7 +26,11 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 | 7 | Flow evidence and the boundary | 8, the boundary |
 | 8 | The iPad: LSP over the daemon, mutual TLS | 11, the iPad |
 
-**Done:** 1, in Meep2 6d496dd; 2, in Meep2 ee030d7, which also counts each link's errors and each module's `passed`.
+**Done:**
+
+- **1,** in Meep2 6d496dd.
+- **2,** in Meep2 ee030d7, which also counts each link's errors and each module's `passed`.
+- **3,** in Meep2 2ef2d35, with 810c2fc, which pairs unchanged modules first when matching (Q186). Synesthesia's step 4 uses it.
 
 Prompts 1 and 2 touch the same files (`Contracts.cs`, the daemon, the runtime's stats), so run them one after the other, not side by side.
 
@@ -65,19 +69,35 @@ Prompts 1 and 2 touch the same files (`Contracts.cs`, the daemon, the runtime's 
 
 ## 3. `meep lsp`: graph, semantic tokens, verb catalogue
 
-> Synesthesia, the Swift app in `~/Projects/Synesthesia` (design in `docs/Design/architecture-round-1.md` there), shows a Meeplang file beside a live graph of it and keeps the two in step. It never parses Meeplang itself: it asks `meep lsp`, as VS Code does. Add three things to `meep lsp`:
+Refreshed 16 November 2026 for Synesthesia's step 4, against Meep2 at ee030d7.
+
+> Synesthesia, the Swift app in `~/Projects/Synesthesia` (design in `docs/Design/architecture-round-1.md` there), draws a running pipeline live on a canvas from the daemon's graph (`GET /pipelines/{name}/graph`, from the session reported in `docs/Design/Chat/graph.md`) and its counts. Its next step shows the pipeline's Meeplang beside the canvas and keeps the two in step as you type: pointing at a line lights up its tile and the other way round, each module's rate shows in the gutter, and saving reloads the pipeline through `meep start --watch`. Synesthesia never parses Meeplang itself: it starts `meep lsp` as a child process over standard input and output, and asks it, as the VS Code extension does. Today `meep lsp` has diagnostics, completion and hover. Add three things:
 >
-> - **`meep/graph`:** for an open document, the same graph the daemon's `GET /pipelines/{name}/graph` returns, from the same contract. Module keys must stay stable while someone types, so match each new graph against the document's previous one with `ModuleMatcher`, as a reload does. When the text doesn't parse, return the last good graph with the broken range marked, rather than nothing.
-> - **Semantic tokens** (`textDocument/semanticTokens/full`, and `/delta` if it's cheap), so editors colour Meeplang from Meep's own parser. Update the VS Code extension to use them.
-> - **A verb catalogue,** `meep/verbs`: each verb and inflection, with its role, parameters (types, defaults, descriptions), the message types it takes and emits, and the file and line of its C# class, from PDBs and SourceLink. Include verbs from loaded plugins.
+> - **`meep/graph`:** for an open document, the same `PipelineGraph` the daemon returns, from the same contract in `Contracts.cs`, with the document's version.
+>   - Module keys must stay stable while someone types, so match each new graph against the document's previous one with `ModuleMatcher`, as a reload does.
+>   - When the text doesn't parse, return the last good graph with the broken range marked, rather than nothing.
+>   - Let a client opt in to a notification when a document's graph changes, so the canvas follows typing without asking after every keystroke.
+> - **Keys that agree with the daemon's.** Synesthesia draws tiles from the editor's graph but counts from the daemon's, so when a file that's running is open, a module must have the same key in both, and keep it as the text is edited and saved and the daemon reloads. Work out how. For example, `meep/graph` could take the running pipeline's graph as the base to match against, or keys could come from something both sides compute alike. Say in the report what a client has to do.
+> - **Semantic tokens** (`textDocument/semanticTokens/full`, and `/delta` if it's cheap), so editors colour Meeplang from Meep's own parser. Update the VS Code extension in `editors/vscode` to use them.
+> - **A verb catalogue,** `meep/verbs`: each verb and inflection, with:
+>   - its role, as the graph gives it;
+>   - its parameters, with types, defaults and descriptions;
+>   - the message types it takes and emits;
+>   - the file and line of its C# class, from PDBs and SourceLink.
 >
-> Test each with the examples. If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
+>   Include verbs from loaded plugins. If the source locations turn out to be a large piece of work, they can wait. Synesthesia needs them only at its code level, much later; say in the report if you leave them.
+>
+> Test each with the examples, including a template, an `#include` and a file with a syntax error part way through. If design questions come up, ask them in the numbered style of the design rounds, continuing from 183. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
 
 ## 4. `meep lsp`: applying edits
 
 > Synesthesia, the Swift app in `~/Projects/Synesthesia`, edits pipelines on a canvas. Each gesture becomes one of Meep2's own edits (the `EditItem` kinds that `POST /pipelines/{name}/edits` takes), so comments and layout survive. Add `meep/applyEdits` to `meep lsp`: it takes a document, the version the client has, and a list of edits; runs them through `SourceEditor` on the server's copy of the text; and returns the smallest text edits that make the change, without writing to disk. Refuse a stale version. One request should be one undo step for the client, so apply a list of edits as a unit or not at all.
 >
-> Synesthesia will write the text for merges and moves itself, so Meep2 doesn't need join or move edits for it. If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
+> Synesthesia will write the text for merges and moves itself, so Meep2 doesn't need join or move edits for it.
+>
+> One small thing for the daemon as well: say in `PipelineSummary` whether it's watching a pipeline's file (`HostedPipeline.Watching`), so a client that saves the file knows whether the change will run without asking for a reload. Synesthesia now waits two seconds after saving, and says the daemon isn't watching if no reload comes.
+>
+> If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
 
 ## 5. One subscription, digests, host identity
 

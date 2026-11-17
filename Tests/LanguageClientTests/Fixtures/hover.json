@@ -1,0 +1,10 @@
+{
+ "jsonrpc": "2.0",
+ "id": 7,
+ "result": {
+  "contents": {
+   "kind": "markdown",
+   "value": "**Interval** (source)\n\n`Interval.Interval`: Emits a Tick straight away, then again every period, until stopped or until it has emitted count ticks. In Meeplang: Interval 1m or Interval 500ms count=3. Ticks are numbered from 1, or from count-start, as in Interval 1s count-start=0.\n- `period` duration, after the verb, required. How long between ticks.\n- `count` number. How many ticks to emit before finishing. Without it, Interval runs until stopped.\n- `count-start` number, default `1`. The number of the first tick, such as 0 to match Enumerate's index (Q163). 1 unless set. It doesn't change how many ticks Count emits.\n- `payload` text. Text to put in each tick, for telling intervals apart."
+  }
+ }
+}

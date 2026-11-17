@@ -1,5 +1,6 @@
 import ContinuumKit
 import MeepClient
+import Stage
 import SwiftUI
 
 /// The Continuum: hosts and their pipelines on the left; on the right, the selected host's pipelines, or the selected
@@ -31,6 +32,7 @@ public struct ContinuumView: View {
         } detail: {
             if let selection = workspace.selection, let pipeline = continuum.pipeline(at: selection) {
                 PipelineDetailView(pipeline: pipeline, host: continuum.host(selection.host))
+                    .id(pipeline.id)
             } else if let selection = workspace.selection, let host = continuum.host(selection.host) {
                 HostDetailView(host: host, selection: $workspace.selection)
             } else {
@@ -142,6 +144,20 @@ struct HostDetailView: View {
 struct PipelineDetailView: View {
     let pipeline: MeepPipeline
     let host: MeepHost?
+    /// The stage the canvas draws, which the text beside it shares.
+    @State private var stage: PipelineStage
+    @Environment(\.workspace) private var workspace
+    @AppStorage("textPaneWidth") private var textWidth = PipelineDetailView.usualTextWidth
+
+    static let usualTextWidth = 440.0
+
+    init(pipeline: MeepPipeline, host: MeepHost?) {
+        self.pipeline = pipeline
+        self.host = host
+        _stage = State(initialValue: PipelineStage(pipeline: pipeline, host: host))
+    }
+
+    private var showsText: Bool { workspace?.showsText ?? false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -166,23 +182,52 @@ struct PipelineDetailView: View {
                     Spacer()
                     Text(pipeline.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                         .help(pipeline.path).textSelection(.enabled)
+                    if let workspace {
+                        Toggle(isOn: Binding(get: { workspace.showsText }, set: { workspace.showsText = $0 })) {
+                            Label("Meeplang", systemImage: "doc.text")
+                        }
+                        .toggleStyle(.button)
+                        .help("Show the pipeline's Meeplang beside the canvas (⌥⌘T). Zooming in past the closest zoom over a tile, or double-clicking it, opens it at that module.")
+                    }
                 }
             }
             .padding([.horizontal, .top])
             .padding(.bottom, 10)
             #if os(macOS)
             VSplitView {
-                PipelineCanvas(pipeline: pipeline, host: host)
-                    .id(pipeline.id)
+                canvasAndText
                     .frame(minHeight: 240, idealHeight: 480, maxHeight: .infinity)
                 ModuleTable(modules: pipeline.modules, current: host?.isReachable ?? false)
                     .frame(minHeight: 90, idealHeight: 170, maxHeight: .infinity)
             }
             #else
-            PipelineCanvas(pipeline: pipeline, host: host).id(pipeline.id)
+            canvasAndText
             #endif
         }
+        .onChange(of: stage.textRequest) { _, request in
+            if let request { workspace?.showText(of: pipeline, at: request.key) }
+        }
     }
+
+    /// The canvas, with the text beside it when it's showing: levels 1 and 2 open beside level 3 rather than
+    /// replacing it (design, section 2).
+    private var canvasAndText: some View {
+        GeometryReader { geometry in
+            let widest = max(Self.minimumTextWidth, geometry.size.width - Self.minimumCanvasWidth)
+            HStack(spacing: 0) {
+                PipelineCanvas(stage: stage)
+                    .frame(minWidth: Self.minimumCanvasWidth)
+                if showsText {
+                    PaneEdge(width: $textWidth, range: Self.minimumTextWidth...widest, usual: Self.usualTextWidth)
+                    TextPane(pipeline: pipeline, host: host, stage: stage)
+                        .frame(width: min(max(textWidth, Self.minimumTextWidth), widest))
+                }
+            }
+        }
+    }
+
+    static let minimumCanvasWidth = 320.0
+    static let minimumTextWidth = 260.0
 }
 
 struct ModuleTable: View {

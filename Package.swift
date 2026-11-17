@@ -19,6 +19,8 @@ let package = Package(
         .library(name: "MetalStage", targets: ["MetalStage"]),
         .library(name: "SynesthesiaUI", targets: ["SynesthesiaUI"]),
         .library(name: "Assistant", targets: ["Assistant"]),
+        .library(name: "LanguageClient", targets: ["LanguageClient"]),
+        .library(name: "CodeEditing", targets: ["CodeEditing"]),
         .executable(name: "SynesthesiaMac", targets: ["SynesthesiaMac"]),
         .executable(name: "synesthesia-mcp", targets: ["SynesthesiaMCPBridge"]),
     ],
@@ -33,30 +35,40 @@ let package = Package(
         .target(name: "ContinuumKit", dependencies: ["MeepClient", "FlowKit"]),
         // Pretend hosts, for tests and for building the host and mesh levels without real machines.
         .target(name: "Simulation", dependencies: ["MeepClient"]),
+        // meep lsp: the Language Server Protocol, with Meep's additions (the graph, keys shared with the daemon, the
+        // verb catalogue), and starting it on the Mac.
+        .target(name: "LanguageClient", dependencies: ["Transport", "MeepClient"]),
+        // A pipeline's Meeplang as it's edited: its text, colours, problems and graph from meep lsp, with keys that
+        // agree with the daemon's, and what the gutter shows. The text view itself is the platform's.
+        .target(name: "CodeEditing", dependencies: ["LanguageClient", "ContinuumKit", "MeepClient", "FlowKit"]),
         // Layouts in Swift (Q3): layered for a pipeline; later packing, force and edge layouts, and pins.
         .target(name: "LayoutKit"),
         // The scene the canvas draws, independent of the renderer: tiles, wires, text, particles, the camera and
         // hit-testing, built from the model.
         .target(name: "Stage", dependencies: ["ContinuumKit", "LayoutKit", "FlowKit", "MeepClient"]),
         // The Metal renderer of the stage, shared by the Mac and iPad.
-        .target(name: "MetalStage", dependencies: ["Stage"]),
+        // Optimised even in debug builds: drawing each glyph's distance field takes seconds unoptimised, on the main
+        // thread, which stalls the canvas the first time it draws and every test running beside the renderer's.
+        .target(name: "MetalStage", dependencies: ["Stage"], swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
         // The tools Claude uses, written once (design, section 8), and the MCP server that offers them.
-        .target(name: "Assistant", dependencies: ["ContinuumKit", "Stage", "FlowKit", "MeepClient", "Transport"]),
+        .target(name: "Assistant", dependencies: ["ContinuumKit", "Stage", "FlowKit", "MeepClient", "Transport", "CodeEditing", "LanguageClient"]),
         // SwiftUI shared by the Mac and iPad apps.
-        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage"]),
+        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage", "CodeEditing", "LanguageClient", "MeepClient"]),
         // The Mac app: its windows, menus and the hosts it starts with.
-        .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation", "Stage", "MetalStage", "Assistant", "Transport"]),
+        .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation", "Stage", "MetalStage", "Assistant", "Transport", "CodeEditing", "LanguageClient"]),
         // synesthesia-mcp, in the app bundle: joins an MCP client's standard input and output to the app's socket.
         .executableTarget(name: "SynesthesiaMCPBridge", dependencies: ["Transport"]),
 
         .testTarget(name: "TransportTests", dependencies: ["Transport"]),
+        .testTarget(name: "LanguageClientTests", dependencies: ["LanguageClient", "Transport", "MeepClient"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "CodeEditingTests", dependencies: ["CodeEditing", "LanguageClient", "ContinuumKit", "Simulation", "MeepClient", "Transport"]),
         .testTarget(name: "MeepClientTests", dependencies: ["MeepClient"], resources: [.copy("Fixtures")]),
         .testTarget(name: "FlowKitTests", dependencies: ["FlowKit"]),
         .testTarget(name: "ContinuumKitTests", dependencies: ["ContinuumKit", "Simulation"]),
         .testTarget(name: "LayoutKitTests", dependencies: ["LayoutKit"]),
         .testTarget(name: "StageTests", dependencies: ["Stage", "ContinuumKit", "Simulation", "MeepClient"]),
         .testTarget(name: "MetalStageTests", dependencies: ["MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
-        .testTarget(name: "AssistantTests", dependencies: ["Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient"]),
+        .testTarget(name: "AssistantTests", dependencies: ["Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient", "CodeEditing", "LanguageClient"]),
         .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
     ]
 )

@@ -1,0 +1,8 @@
+// A pipeline for the canvas: two timers merge, a filter, a fan-out, and errors handled.
++ Interval 250ms as Fast
++ Interval 1s as Slow
+Where msg.Count % 7 != 3 as Keep
+    WriteLine "kept {msg.Count}" as Log
+    Where 10 / (msg.Count % 5) > 1 as Risky
+        WriteLine "risky {msg.Count}"
+        WriteLine "error: {msg.Error}" @errors

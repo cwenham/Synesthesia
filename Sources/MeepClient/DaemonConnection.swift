@@ -198,6 +198,18 @@ public actor DaemonConnection: HostLink {
         return try await required(request("GET", path, as: PipelineGraph.self), path)
     }
 
+    public func source(_ name: String) async throws -> SourceText {
+        let path = "/pipelines/\(Self.escape(name))/source"
+        return try await required(request("GET", path, as: SourceText.self), path)
+    }
+
+    public func reload(_ name: String) async throws {
+        _ = try await request("POST", "/pipelines/\(Self.escape(name))/reload", json: Empty(), as: Ignored.self)
+    }
+
+    /// An answer whose body isn't needed.
+    struct Ignored: Decodable, Sendable {}
+
     public nonisolated func stats(_ name: String, every interval: Duration) -> AsyncThrowingStream<StatsEvent, any Error> {
         let frames = stream("/pipelines/\(Self.escape(name))/stats?every=\(interval.meepText)")
         return AsyncThrowingStream { continuation in

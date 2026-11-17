@@ -1,0 +1,57 @@
+{
+ "jsonrpc": "2.0",
+ "id": 1,
+ "result": {
+  "capabilities": {
+   "textDocumentSync": 1,
+   "completionProvider": {
+    "triggerCharacters": [
+     "@",
+     " ",
+     "#",
+     "\""
+    ]
+   },
+   "hoverProvider": true,
+   "semanticTokensProvider": {
+    "legend": {
+     "tokenTypes": [
+      "namespace",
+      "type",
+      "parameter",
+      "variable",
+      "property",
+      "function",
+      "method",
+      "macro",
+      "keyword",
+      "comment",
+      "string",
+      "number",
+      "operator",
+      "decorator"
+     ],
+     "tokenModifiers": [
+      "declaration",
+      "readonly",
+      "defaultLibrary"
+     ]
+    },
+    "full": {
+     "delta": true
+    },
+    "range": false
+   },
+   "experimental": {
+    "meep": {
+     "graph": true,
+     "setBase": true,
+     "verbs": true
+    }
+   }
+  },
+  "serverInfo": {
+   "name": "meep"
+  }
+ }
+}

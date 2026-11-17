@@ -1,8 +1,10 @@
+import CodeEditing
 import ContinuumKit
 import CoreGraphics
 import FlowKit
 import Foundation
 import ImageIO
+import LanguageClient
 import MeepClient
 import Stage
 import UniformTypeIdentifiers
@@ -22,6 +24,12 @@ public protocol Viewer: AnyObject {
     func reveal()
     /// The canvas as it's drawn now, if a pipeline is showing.
     func canvasImage() -> CGImage?
+    /// A pipeline's text, if it's open beside the canvas or has changes that aren't saved.
+    func document(for pipeline: MeepPipeline) -> MeeplangDocument?
+    /// Whether the text shows beside the canvas.
+    var showsText: Bool { get }
+    /// The language server, for the verb catalogue.
+    var language: LanguageService? { get }
 }
 
 /// The tools for looking at the Continuum and showing things in it (design, section 8): step 3's set.
@@ -34,8 +42,9 @@ public enum ContinuumTools {
         its key (m1, m2, …, which lasts through reloads), its name or its number. "local" is this Mac's daemon.
 
         Start with list_continuum. describe_pipeline gives a pipeline's modules, links and counts; watch_counts \
-        measures them over a few seconds; read_pipeline_text gives its Meeplang. describe_view says what the \
-        canvas shows, which is cheaper and more exact than capture_view's image. show points the app at an \
+        measures them over a few seconds; read_pipeline_text gives its Meeplang, as the person is editing it if \
+        they are; describe_verbs says what each verb does and takes. describe_view says what the canvas and the \
+        text beside it show, which is cheaper and more exact than capture_view's image. show points the app at an \
         address so the person can see what you mean.
         """
 
@@ -44,6 +53,7 @@ public enum ContinuumTools {
             listContinuum(viewer),
             describePipeline(viewer),
             readPipelineText(viewer),
+            describeVerbs(viewer),
             watchCounts(viewer),
             describeView(viewer),
             captureView(viewer),
@@ -103,25 +113,100 @@ public enum ContinuumTools {
     static func readPipelineText(_ viewer: Viewer) -> Tool {
         Tool(
             name: "read_pipeline_text", title: "Read a pipeline's Meeplang",
-            description: "The Meeplang file a pipeline runs from, with line numbers, and which module is written on which line. Only for pipelines on this Mac.",
+            description: "A pipeline's Meeplang, with line numbers, and which module is written on which line. If the person has it open with changes they haven't saved, it's their text as it is now, and says so; otherwise it's what the daemon runs.",
             inputSchema: ["type": "object", "properties": ["address": addressSchema], "required": ["address"]]
         ) { arguments in
-            let (host, pipeline, _) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
-            guard case .local = host.kind else {
-                throw ToolError("\(host.title) isn't this Mac, so its files can't be read yet.")
-            }
-            let path = pipeline!.path
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
-                throw ToolError("Couldn't read \(path).")
+            let (host, found, _) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
+            let pipeline = found!
+            var note: String?
+            let path: String
+            let text: String
+            var modules = pipeline.graph?.modules ?? []
+            if let document = viewer.document(for: pipeline) {
+                (path, text) = (document.path, document.text)
+                if document.isEdited { note = "This is the text as the person is editing it, with changes they haven't saved; the pipeline runs the saved file." }
+                if let graph = document.answer?.graph { modules = graph.modules }
+            } else if let link = host.link, let source = try? await link.source(pipeline.name) {
+                (path, text) = (source.path, source.text)
+                if source.edited { note = "The daemon runs edits made through its API that aren't in the file." }
+            } else if case .local = host.kind, let file = try? String(contentsOfFile: pipeline.path, encoding: .utf8) {
+                (path, text) = (pipeline.path, file)
+            } else {
+                throw ToolError("Couldn't read \(pipeline.name)'s text: \(host.title) can't be reached, or has none for it.")
             }
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
             let numbered = lines.prefix(2000).enumerated().map { String(format: "%4d  ", $0 + 1) + $1 }.joined(separator: "\n")
-            let where_ = (pipeline!.graph?.modules ?? []).map { "\($0.key) \($0.module): line \($0.span.startLine)\($0.span.file == path ? "" : " of \($0.span.file)")" }
+            let where_ = modules.map { "\($0.key) \($0.module): line \($0.span.startLine)\($0.span.file == path ? "" : " of \($0.span.file)")" }
             var result = "\(path)\n\n\(numbered)"
+            if let note { result = "\(note)\n\n" + result }
             if lines.count > 2000 { result += "\n… \(lines.count - 2000) more lines" }
             if !where_.isEmpty { result += "\n\nModules:\n" + where_.joined(separator: "\n") }
             return ToolResult([.text(result)])
         }
+    }
+
+    static func describeVerbs(_ viewer: Viewer) -> Tool {
+        Tool(
+            name: "describe_verbs", title: "Describe Meeplang's verbs",
+            description: "What each verb and inflection does, from Meep's catalogue: its role, its parameters with their types, defaults and descriptions, the message types it takes and emits, and where its C# is. Give a verb, such as Fetch or Fetch.HTTP, for one; leave it out for a list of all. With a pipeline's address, it includes the verbs its plugins add.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "verb": ["type": "string", "description": "A verb, such as Fetch, or a verb and inflection, such as Fetch.HTTP."],
+                    "address": addressSchema,
+                ],
+            ]
+        ) { arguments in
+            guard let language = viewer.language else { throw ToolError("This app has no language server to ask.") }
+            var uri: String?
+            if arguments["address"] != nil {
+                let (_, pipeline, _) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
+                uri = viewer.document(for: pipeline!)?.uri ?? MeepLanguageServer.uri(forPath: pipeline!.path)
+            }
+            let verbs: [VerbEntry]
+            do {
+                verbs = try await language.verbs(for: uri)
+            } catch {
+                throw ToolError("meep lsp couldn't be asked: \(error.localizedDescription)")
+            }
+            guard let asked = arguments["verb"]?.string?.trimmingCharacters(in: .whitespaces), !asked.isEmpty else {
+                // All of them, briefly.
+                return .json(.array(verbs.map { verb in
+                    .object([
+                        "verb": .string(verb.inflection == verb.verb ? verb.verb : "\(verb.verb).\(verb.inflection)"),
+                        "role": .string(verb.role),
+                        "summary": .string(String((verb.description ?? "").prefix(160))),
+                    ])
+                }))
+            }
+            let parts = asked.split(separator: ".", maxSplits: 1).map { String($0).lowercased() }
+            let matches = verbs.filter { $0.verb.lowercased() == parts[0] && (parts.count == 1 || $0.inflection.lowercased() == parts[1]) }
+            guard !matches.isEmpty else {
+                throw ToolError("There's no verb called \(asked). There are: \(Set(verbs.map(\.verb)).sorted().joined(separator: ", ")).")
+            }
+            return .json(.array(matches.map(describe)))
+        }
+    }
+
+    static func describe(_ verb: VerbEntry) -> JSONValue {
+        var entry: [String: JSONValue] = [
+            "verb": .string(verb.verb), "inflection": .string(verb.inflection), "role": .string(verb.role),
+            "parameters": .array(verb.parameters.map { parameter in
+                var item: [String: JSONValue] = ["name": .string(parameter.name), "type": .string(parameter.type)]
+                if parameter.positional { item["afterTheVerb"] = true }
+                if parameter.required { item["required"] = true }
+                if parameter.perMessage { item["perMessage"] = true }
+                if let value = parameter.default { item["default"] = .string(value) }
+                if let choices = parameter.choices { item["choices"] = .array(choices.map { .string($0) }) }
+                if let description = parameter.description { item["description"] = .string(description) }
+                return .object(item)
+            }),
+            "takes": .array(verb.takes.map { .string($0) }),
+            "emits": .array(verb.emits.map { emitted in .string(emitted.when.map { "\(emitted.type), when \($0) is true" } ?? emitted.type) }),
+        ]
+        if let description = verb.description { entry["description"] = .string(description) }
+        if let file = verb.source?.file { entry["source"] = .string(verb.source?.line.map { "\(file):\($0)" } ?? file) }
+        return .object(entry)
     }
 
     static func watchCounts(_ viewer: Viewer) -> Tool {
@@ -190,7 +275,7 @@ public enum ContinuumTools {
     static func describeView(_ viewer: Viewer) -> Tool {
         Tool(
             name: "describe_view", title: "Describe what the canvas shows",
-            description: "What the app's canvas is showing, as structure: the pipeline, the zoom, each tile's place on screen and its label, and on each wire whether particles show single messages or a rate. Cheaper and more exact than capture_view.",
+            description: "What the app's canvas is showing, as structure: the pipeline, the zoom, each tile's place on screen and its label, and on each wire whether particles show single messages or a rate. When the Meeplang is open beside it, says whether it's saved, whether it loads, and its problems; the canvas then draws the text as typed, with modules not running yet marked. Cheaper and more exact than capture_view.",
             inputSchema: ["type": "object", "properties": [:]]
         ) { _ in
             var result: [String: JSONValue] = ["selected": viewer.selection.map { .string($0.description) } ?? .null]
@@ -200,6 +285,9 @@ public enum ContinuumTools {
                 return .json(.object(result))
             }
             result["canvas"] = describe(stage)
+            if viewer.showsText, let document = viewer.document(for: stage.pipeline) {
+                result["text"] = describe(document)
+            }
             return .json(.object(result))
         }
     }
@@ -338,6 +426,10 @@ public enum ContinuumTools {
             ]
             if tile.isSelected { entry["selected"] = true }
             if tile.isHovered { entry["hovered"] = true }
+            if let module = stage.module(tile.id) {
+                if module.isNew { entry["notRunningYet"] = true }
+                if module.isBeingEdited { entry["beingEdited"] = true }
+            }
             if tile.flash > 0 { entry["flashingRed"] = true }
             let queued = snapshot.overParticles.filter { $0.owner == "\(tile.id).queued" }.count
             if queued > 0 { entry["queueDots"] = .number(queued) }
@@ -384,6 +476,26 @@ public enum ContinuumTools {
             }
         }
         return .object(result)
+    }
+
+    /// The text beside the canvas: its file, whether it's saved and loads, and its problems.
+    static func describe(_ document: MeeplangDocument) -> JSONValue {
+        var entry: [String: JSONValue] = [
+            "file": .string(document.path),
+            "unsavedChanges": .bool(document.isEdited),
+            "status": .string(String(describing: document.status)),
+            "lines": .number(document.lines.lineCount),
+        ]
+        if let answer = document.answer {
+            entry["loads"] = .bool(answer.current)
+            if !answer.current, let changed = answer.changed {
+                entry["linesBeingMended"] = .string("\(changed.start.line + 1) to \(max(changed.start.line + 1, changed.end.line))")
+            }
+        }
+        if !document.diagnostics.isEmpty { entry["problems"] = .array(document.problemLines.map { .string($0) }) }
+        if document.isReadOnly { entry["readOnly"] = true }
+        if let problem = document.baseProblem { entry["keysNote"] = .string(problem) }
+        return .object(entry)
     }
 
     // MARK: Helpers

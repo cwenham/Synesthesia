@@ -43,8 +43,13 @@ public struct StageTile: Sendable, Equatable {
     public var isSelected: Bool
     /// Greyed, as for a pipeline that has ended or a host that can't be reached.
     public var isDimmed: Bool
+    /// Outlined with dashes and without depth: a module in the text that isn't running yet, or one being mended.
+    public var isGhost: Bool
 
-    public init(id: String, shape: TileShape, frame: CGRect, color: StageColor, flash: Float = 0, isHovered: Bool = false, isSelected: Bool = false, isDimmed: Bool = false) {
+    public init(
+        id: String, shape: TileShape, frame: CGRect, color: StageColor, flash: Float = 0, isHovered: Bool = false,
+        isSelected: Bool = false, isDimmed: Bool = false, isGhost: Bool = false
+    ) {
         self.id = id
         self.shape = shape
         self.frame = frame
@@ -53,6 +58,7 @@ public struct StageTile: Sendable, Equatable {
         self.isHovered = isHovered
         self.isSelected = isSelected
         self.isDimmed = isDimmed
+        self.isGhost = isGhost
     }
 }
 

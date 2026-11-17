@@ -1,0 +1,841 @@
+[
+ {
+  "jsonrpc": "2.0",
+  "method": "textDocument/publishDiagnostics",
+  "params": {
+   "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+   "diagnostics": []
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "textDocument/publishDiagnostics",
+  "params": {
+   "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+   "diagnostics": []
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "meep/graphChanged",
+  "params": {
+   "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+   "version": 2,
+   "current": true,
+   "graph": {
+    "name": "shapes",
+    "path": "/tmp/synesthesia-fixtures/shapes.meep",
+    "version": 2,
+    "modules": [
+     {
+      "key": "m1",
+      "number": 1,
+      "module": "Fast",
+      "verb": "Interval",
+      "role": "source",
+      "inflections": [
+       "Interval"
+      ],
+      "parameters": [
+       {
+        "text": "250ms",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 2,
+         "startColumn": 12,
+         "endLine": 2,
+         "endColumn": 17
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 2,
+       "startColumn": 1,
+       "endLine": 2,
+       "endColumn": 25
+      },
+      "name": "Fast",
+      "feeder": true
+     },
+     {
+      "key": "m2",
+      "number": 2,
+      "module": "Slow",
+      "verb": "Interval",
+      "role": "source",
+      "inflections": [
+       "Interval"
+      ],
+      "parameters": [
+       {
+        "text": "1s",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 3,
+         "startColumn": 12,
+         "endLine": 3,
+         "endColumn": 14
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 3,
+       "startColumn": 1,
+       "endLine": 3,
+       "endColumn": 22
+      },
+      "name": "Slow",
+      "feeder": true
+     },
+     {
+      "key": "m3",
+      "number": 3,
+      "module": "Keep",
+      "verb": "Where",
+      "role": "filter",
+      "inflections": [
+       "Where"
+      ],
+      "parameters": [
+       {
+        "text": "msg.Count % 7 != 3",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 4,
+         "startColumn": 7,
+         "endLine": 4,
+         "endColumn": 25
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 4,
+       "startColumn": 1,
+       "endLine": 4,
+       "endColumn": 33
+      },
+      "name": "Keep",
+      "feeder": false
+     },
+     {
+      "key": "m4",
+      "number": 4,
+      "module": "Log",
+      "verb": "WriteLine",
+      "role": "outlet",
+      "inflections": [
+       "WriteLine"
+      ],
+      "parameters": [
+       {
+        "text": "\"kept {msg.Count}\"",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 5,
+         "startColumn": 15,
+         "endLine": 5,
+         "endColumn": 33
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 5,
+       "startColumn": 5,
+       "endLine": 5,
+       "endColumn": 40
+      },
+      "name": "Log",
+      "under": "m3",
+      "feeder": false
+     },
+     {
+      "key": "m8",
+      "number": 5,
+      "module": "Where #5",
+      "verb": "Where",
+      "role": "filter",
+      "inflections": [
+       "Where"
+      ],
+      "parameters": [
+       {
+        "text": "msg.Count > 2",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 6,
+         "startColumn": 11,
+         "endLine": 6,
+         "endColumn": 24
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 6,
+       "startColumn": 5,
+       "endLine": 6,
+       "endColumn": 24
+      },
+      "under": "m3",
+      "feeder": false
+     },
+     {
+      "key": "m5",
+      "number": 6,
+      "module": "Risky",
+      "verb": "Where",
+      "role": "filter",
+      "inflections": [
+       "Where"
+      ],
+      "parameters": [
+       {
+        "text": "10 / (msg.Count % 5) > 1",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 7,
+         "startColumn": 11,
+         "endLine": 7,
+         "endColumn": 35
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 7,
+       "startColumn": 5,
+       "endLine": 7,
+       "endColumn": 44
+      },
+      "name": "Risky",
+      "under": "m3",
+      "feeder": false
+     },
+     {
+      "key": "m6",
+      "number": 7,
+      "module": "WriteLine #7",
+      "verb": "WriteLine",
+      "role": "outlet",
+      "inflections": [
+       "WriteLine"
+      ],
+      "parameters": [
+       {
+        "text": "\"risky {msg.Count}\"",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 8,
+         "startColumn": 19,
+         "endLine": 8,
+         "endColumn": 38
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 8,
+       "startColumn": 9,
+       "endLine": 8,
+       "endColumn": 38
+      },
+      "under": "m5",
+      "feeder": false
+     },
+     {
+      "key": "m7",
+      "number": 8,
+      "module": "WriteLine #8",
+      "verb": "WriteLine",
+      "role": "outlet",
+      "inflections": [
+       "WriteLine"
+      ],
+      "parameters": [
+       {
+        "text": "\"error: {msg.Error}\"",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 9,
+         "startColumn": 19,
+         "endLine": 9,
+         "endColumn": 39
+        }
+       }
+      ],
+      "modifiers": [
+       {
+        "name": "errors",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 9,
+         "startColumn": 40,
+         "endLine": 9,
+         "endColumn": 47
+        }
+       }
+      ],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 9,
+       "startColumn": 9,
+       "endLine": 9,
+       "endColumn": 47
+      },
+      "under": "m5",
+      "feeder": false
+     }
+    ],
+    "links": [
+     {
+      "key": "m1>m3",
+      "from": "m1",
+      "to": "m3",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m2>m3",
+      "from": "m2",
+      "to": "m3",
+      "input": 2,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m3>m4",
+      "from": "m3",
+      "to": "m4",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m3>m8",
+      "from": "m3",
+      "to": "m8",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m3>m5",
+      "from": "m3",
+      "to": "m5",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m5>m6",
+      "from": "m5",
+      "to": "m6",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m5>m7",
+      "from": "m5",
+      "to": "m7",
+      "input": 1,
+      "port": "errors",
+      "types": [
+       "ErrorMessage"
+      ],
+      "undeclared": false
+     }
+    ]
+   },
+   "builtFrom": 2,
+   "problems": [],
+   "changed": null
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "textDocument/publishDiagnostics",
+  "params": {
+   "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+   "diagnostics": [
+    {
+     "range": {
+      "start": {
+       "line": 3,
+       "character": 14
+      },
+      "end": {
+       "line": 3,
+       "character": 38
+      }
+     },
+     "severity": 1,
+     "source": "meep",
+     "message": "This string isn't closed with a \"."
+    },
+    {
+     "range": {
+      "start": {
+       "line": 2,
+       "character": 2
+      },
+      "end": {
+       "line": 2,
+       "character": 10
+      }
+     },
+     "severity": 1,
+     "source": "meep",
+     "message": "Nothing follows this + line for it to feed. Put the module it feeds on the next line, at the same indentation."
+    }
+   ]
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "meep/graphChanged",
+  "params": {
+   "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+   "version": 3,
+   "current": false,
+   "graph": {
+    "name": "shapes",
+    "path": "/tmp/synesthesia-fixtures/shapes.meep",
+    "version": 2,
+    "modules": [
+     {
+      "key": "m1",
+      "number": 1,
+      "module": "Fast",
+      "verb": "Interval",
+      "role": "source",
+      "inflections": [
+       "Interval"
+      ],
+      "parameters": [
+       {
+        "text": "250ms",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 2,
+         "startColumn": 12,
+         "endLine": 2,
+         "endColumn": 17
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 2,
+       "startColumn": 1,
+       "endLine": 2,
+       "endColumn": 25
+      },
+      "name": "Fast",
+      "feeder": true
+     },
+     {
+      "key": "m2",
+      "number": 2,
+      "module": "Slow",
+      "verb": "Interval",
+      "role": "source",
+      "inflections": [
+       "Interval"
+      ],
+      "parameters": [
+       {
+        "text": "1s",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 3,
+         "startColumn": 12,
+         "endLine": 3,
+         "endColumn": 14
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 3,
+       "startColumn": 1,
+       "endLine": 3,
+       "endColumn": 22
+      },
+      "name": "Slow",
+      "feeder": true
+     },
+     {
+      "key": "m3",
+      "number": 3,
+      "module": "Keep",
+      "verb": "Where",
+      "role": "filter",
+      "inflections": [
+       "Where"
+      ],
+      "parameters": [
+       {
+        "text": "msg.Count % 7 != 3",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 4,
+         "startColumn": 7,
+         "endLine": 4,
+         "endColumn": 25
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 4,
+       "startColumn": 1,
+       "endLine": 4,
+       "endColumn": 33
+      },
+      "name": "Keep",
+      "feeder": false
+     },
+     {
+      "key": "m4",
+      "number": 4,
+      "module": "Log",
+      "verb": "WriteLine",
+      "role": "outlet",
+      "inflections": [
+       "WriteLine"
+      ],
+      "parameters": [
+       {
+        "text": "\"kept {msg.Count}\"",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 5,
+         "startColumn": 15,
+         "endLine": 5,
+         "endColumn": 33
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 5,
+       "startColumn": 5,
+       "endLine": 5,
+       "endColumn": 40
+      },
+      "name": "Log",
+      "under": "m3",
+      "feeder": false
+     },
+     {
+      "key": "m8",
+      "number": 5,
+      "module": "Where #5",
+      "verb": "Where",
+      "role": "filter",
+      "inflections": [
+       "Where"
+      ],
+      "parameters": [
+       {
+        "text": "msg.Count > 2",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 6,
+         "startColumn": 11,
+         "endLine": 6,
+         "endColumn": 24
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 6,
+       "startColumn": 5,
+       "endLine": 6,
+       "endColumn": 24
+      },
+      "under": "m3",
+      "feeder": false
+     },
+     {
+      "key": "m5",
+      "number": 6,
+      "module": "Risky",
+      "verb": "Where",
+      "role": "filter",
+      "inflections": [
+       "Where"
+      ],
+      "parameters": [
+       {
+        "text": "10 / (msg.Count % 5) > 1",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 7,
+         "startColumn": 11,
+         "endLine": 7,
+         "endColumn": 35
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 7,
+       "startColumn": 5,
+       "endLine": 7,
+       "endColumn": 44
+      },
+      "name": "Risky",
+      "under": "m3",
+      "feeder": false
+     },
+     {
+      "key": "m6",
+      "number": 7,
+      "module": "WriteLine #7",
+      "verb": "WriteLine",
+      "role": "outlet",
+      "inflections": [
+       "WriteLine"
+      ],
+      "parameters": [
+       {
+        "text": "\"risky {msg.Count}\"",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 8,
+         "startColumn": 19,
+         "endLine": 8,
+         "endColumn": 38
+        }
+       }
+      ],
+      "modifiers": [],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 8,
+       "startColumn": 9,
+       "endLine": 8,
+       "endColumn": 38
+      },
+      "under": "m5",
+      "feeder": false
+     },
+     {
+      "key": "m7",
+      "number": 8,
+      "module": "WriteLine #8",
+      "verb": "WriteLine",
+      "role": "outlet",
+      "inflections": [
+       "WriteLine"
+      ],
+      "parameters": [
+       {
+        "text": "\"error: {msg.Error}\"",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 9,
+         "startColumn": 19,
+         "endLine": 9,
+         "endColumn": 39
+        }
+       }
+      ],
+      "modifiers": [
+       {
+        "name": "errors",
+        "span": {
+         "file": "/tmp/synesthesia-fixtures/shapes.meep",
+         "startLine": 9,
+         "startColumn": 40,
+         "endLine": 9,
+         "endColumn": 47
+        }
+       }
+      ],
+      "span": {
+       "file": "/tmp/synesthesia-fixtures/shapes.meep",
+       "startLine": 9,
+       "startColumn": 9,
+       "endLine": 9,
+       "endColumn": 47
+      },
+      "under": "m5",
+      "feeder": false
+     }
+    ],
+    "links": [
+     {
+      "key": "m1>m3",
+      "from": "m1",
+      "to": "m3",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m2>m3",
+      "from": "m2",
+      "to": "m3",
+      "input": 2,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m3>m4",
+      "from": "m3",
+      "to": "m4",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m3>m8",
+      "from": "m3",
+      "to": "m8",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m3>m5",
+      "from": "m3",
+      "to": "m5",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m5>m6",
+      "from": "m5",
+      "to": "m6",
+      "input": 1,
+      "port": "main",
+      "types": [
+       "ErrorMessage",
+       "Tick"
+      ],
+      "undeclared": false
+     },
+     {
+      "key": "m5>m7",
+      "from": "m5",
+      "to": "m7",
+      "input": 1,
+      "port": "errors",
+      "types": [
+       "ErrorMessage"
+      ],
+      "undeclared": false
+     }
+    ]
+   },
+   "builtFrom": 2,
+   "problems": [
+    {
+     "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+     "range": {
+      "start": {
+       "line": 3,
+       "character": 14
+      },
+      "end": {
+       "line": 3,
+       "character": 38
+      }
+     },
+     "message": "This string isn't closed with a \"."
+    },
+    {
+     "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+     "range": {
+      "start": {
+       "line": 2,
+       "character": 2
+      },
+      "end": {
+       "line": 2,
+       "character": 10
+      }
+     },
+     "message": "Nothing follows this + line for it to feed. Put the module it feeds on the next line, at the same indentation."
+    }
+   ],
+   "changed": {
+    "start": {
+     "line": 3,
+     "character": 0
+    },
+    "end": {
+     "line": 4,
+     "character": 0
+    }
+   }
+  }
+ }
+]

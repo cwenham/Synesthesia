@@ -67,6 +67,9 @@ public final class MeepHost: Identifiable {
     public internal(set) var status: Status = .connecting
     public internal(set) var info: DaemonInfo?
     public internal(set) var pipelines: [MeepPipeline] = []
+    /// The link to it while it's connected, for asking it for more than the session follows, such as a pipeline's
+    /// text, or to reload one.
+    @ObservationIgnored public internal(set) var link: (any HostLink)?
 
     public nonisolated var id: String { name }
     public var address: MeepAddress { MeepAddress(host: name) }
@@ -282,6 +285,8 @@ public final class MeepModule: Identifiable {
     public internal(set) var inflections: [String] = []
     public internal(set) var counts = ModuleStats.zero
     public internal(set) var rates = RateSet()
+    /// Its rate over the last minute: what it emits for a source, otherwise what it receives.
+    public internal(set) var history = RateHistory()
 
     public nonisolated var id: ObjectIdentifier { ObjectIdentifier(self) }
 
@@ -302,6 +307,12 @@ public final class MeepModule: Identifiable {
         counts = detail.counts
         rates.update(detail.counts.byKind, at: time)
         if let graph { apply(graph) }
+        history.record(activity, at: time)
+    }
+
+    /// Messages a second through it: what a source emits, or what anything else receives.
+    public var activity: Double {
+        role == .source || role == .inlet || counts.received == 0 && counts.emitted > 0 ? rates[.emitted] : rates[.received]
     }
 
     func apply(_ graph: GraphModule) {

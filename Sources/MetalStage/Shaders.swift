@@ -65,7 +65,7 @@ struct Tile {
     float2 halfSize;
     float flash;
     int shape;
-    int flags;          // 1 hovered, 2 selected, 4 dimmed
+    int flags;          // 1 hovered, 2 selected, 4 dimmed, 8 ghost
     float depth;
 };
 
@@ -156,6 +156,7 @@ fragment float4 tile_shadow_fragment(TileOut in [[stage_in]], constant Uniforms&
     float visible = smoothstep(2.5, 4.5, spacing / px);
     float alpha = (line * 0.42 * visible + 0.12 * (1 - visible)) * region;
     if ((t.flags & 4) != 0) alpha *= 0.5;
+    if ((t.flags & 8) != 0) discard_fragment();
     return premultiply(t.color.rgb, alpha);
 }
 
@@ -169,12 +170,22 @@ fragment float4 tile_fragment(TileOut in [[stage_in]], constant Uniforms& u [[bu
     float3 color = mix(t.color.rgb, float3(1.0, 0.30, 0.37), t.flash);
     bool hovered = (t.flags & 1) != 0;
     bool selected = (t.flags & 2) != 0;
+    bool ghost = (t.flags & 8) != 0;
 
     float4 result = float4(0);
     // A glow round it when hovered, selected or failing.
     float glow = (hovered ? 0.30 : 0.0) + (selected ? 0.55 : 0.0) + t.flash * 0.9;
     if (glow > 0 && body > 0) {
         result = premultiply(color, glow * exp(-body / 7.0) * clamp(body / px, 0.0, 1.0));
+    }
+    if (ghost) {
+        // Not running yet, or being mended: a faint face, and an outline of dashes, cut by diagonal bands in world
+        // units so they keep their spacing on every shape.
+        float3 faceColor = background.rgb * 1.15 + color * 0.04;
+        result = over(result, premultiply(faceColor, 0.85 * fill(face, px)));
+        float dash = step(0.45, fract((in.local.x - in.local.y) / 9.0));
+        result = over(result, premultiply(color, dash * stroke(face, selected ? line * 1.8 : line * 1.2, px)));
+        return result;
     }
     // The side: darker, its outline dimmer.
     float3 side = background.rgb * 0.7 + t.color.rgb * 0.05;

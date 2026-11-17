@@ -1,3 +1,4 @@
+import CodeEditing
 import ContinuumKit
 import CoreGraphics
 import Foundation
@@ -6,35 +7,6 @@ import Stage
 import Testing
 import Transport
 @testable import Assistant
-
-/// Two ends of an in-memory byte stream.
-final class MemoryStream: ByteStream, @unchecked Sendable {
-    private let incoming: AsyncStream<Data>
-    private let peer: AsyncStream<Data>.Continuation
-    private var iterator: AsyncStream<Data>.Iterator
-    private let lock = NSLock()
-
-    private init(incoming: AsyncStream<Data>, peer: AsyncStream<Data>.Continuation) {
-        self.incoming = incoming
-        self.peer = peer
-        iterator = incoming.makeAsyncIterator()
-    }
-
-    static func pair() -> (MemoryStream, MemoryStream) {
-        let (a, toA) = AsyncStream<Data>.makeStream()
-        let (b, toB) = AsyncStream<Data>.makeStream()
-        return (MemoryStream(incoming: a, peer: toB), MemoryStream(incoming: b, peer: toA))
-    }
-
-    func send(_ data: Data) async throws { peer.yield(data) }
-
-    func receive() async throws -> Data? {
-        var copy = lock.withLock { iterator }
-        return await copy.next()
-    }
-
-    func close() { peer.finish() }
-}
 
 /// A client's end of an MCP connection: sends requests, reads answers by id.
 actor TestClient {
@@ -104,6 +76,10 @@ final class TestViewer: Viewer {
     var reveals = 0
     func reveal() { reveals += 1 }
 
+    func document(for pipeline: MeepPipeline) -> MeeplangDocument? { nil }
+    var showsText: Bool { false }
+    var language: LanguageService? { nil }
+
     func canvasImage() -> CGImage? {
         images += 1
         let context = CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 16,
@@ -152,7 +128,7 @@ struct MCPSessionTests {
 
         let tools = try await client.request("tools/list")
         let names = tools["result"]?["tools"]?.array?.compactMap { $0["name"]?.string }
-        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "watch_counts", "describe_view", "capture_view", "show"])
+        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "describe_verbs", "watch_counts", "describe_view", "capture_view", "show"])
         for tool in tools["result"]?["tools"]?.array ?? [] {
             #expect(tool["inputSchema"]?["type"] == "object")
             #expect(tool["description"]?.string?.isEmpty == false)
@@ -301,10 +277,20 @@ struct ToolTests {
         #expect(viewer.selection == MeepAddress("meep://sim"))
     }
 
-    @Test func textIsOnlyReadFromThisMac() async throws {
+    @Test func textComesFromTheDaemonAndSaysWhenThereIsNone() async throws {
         let viewer = try await TestViewer()
         defer { viewer.stop() }
+        // The simulated host's demo pipelines have no Meeplang.
         let (_, result) = try await call(ContinuumTools.registry(for: viewer), "read_pipeline_text", ["address": "orders"])
+        #expect(result.isError)
+        guard case .text(let message)? = result.content.first else { Issue.record("no text"); return }
+        #expect(message.contains("has none"))
+    }
+
+    @Test func verbsNeedALanguageServer() async throws {
+        let viewer = try await TestViewer()
+        defer { viewer.stop() }
+        let (_, result) = try await call(ContinuumTools.registry(for: viewer), "describe_verbs", ["verb": "Fetch"])
         #expect(result.isError)
     }
 }
