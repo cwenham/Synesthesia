@@ -3,6 +3,7 @@ import Assistant
 import CodeEditing
 import ContinuumKit
 import LanguageClient
+import MeepClient
 import Foundation
 import QuartzCore
 import Stage
@@ -42,6 +43,36 @@ final class AppViewer: Viewer {
     var showsText: Bool { workspace.showsText }
 
     var language: LanguageService? { workspace.language }
+
+    func probes(for pipeline: MeepPipeline) -> [Probe] {
+        workspace.probes(for: pipeline)
+    }
+
+    /// Opens the pipeline with the message in the composer, and waits for the person to send it or not.
+    func inject(_ body: InjectBody, into key: String, of pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async -> InjectionResult {
+        reveal()
+        let (text, isJSON): (String, Bool) = switch body {
+        case .text(let text): (text, false)
+        case .json(let json): (json.text(pretty: true), true)
+        }
+        workspace.compose(into: key, of: pipeline, body: text, isJSON: isJSON, askedBy: "Claude")
+        guard let request = workspace.injection else { return .notSent }
+        let outcome = await withTaskGroup(of: Workspace.InjectionOutcome?.self) { group in
+            group.addTask { await self.workspace.outcome(of: request) }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        switch outcome {
+        case .sent(let injected)?: return .sent(injected)
+        case .notSent?: return .notSent
+        case nil: return .undecided
+        }
+    }
 
     /// Opens the pipeline with its text beside the canvas, shows the edits as a proposal, and waits for the person.
     func propose(_ edits: [MeepEdit], summary: String, to pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async throws -> ProposalResult {

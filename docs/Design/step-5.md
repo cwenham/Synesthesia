@@ -13,12 +13,12 @@ Written 17 November 2026. The fifth step of the order of work in [architecture-r
     - **Its name:** `rename`.
     - **Each parameter:** from the verb catalogue, with its type, default and description on hover, and the value written now. Return or leaving the field sets it (`set`); emptying it takes it out (`unset`).
     - **Its modifiers:** shown as chips that can be removed (`remove-modifier`), and added from a menu (`set-modifier`).
-  - **The palette** (the + at the canvas's bottom left) lists every verb the pipeline can use, by role, with descriptions and a search field.
+  - **The palette** (the + at the canvas's bottom left) lists every verb the pipeline can use, by role, with descriptions and a search field. Step 6 docked it beside the canvas, and made its drags work; see step 6, "Dragging, fixed after you tried it".
     - **Dragging a verb:** onto a tile adds it under that tile (`add`). Onto a wire puts it between the wire's ends (`insert`). Onto the background adds it as a new line at the end, as for a source. What it would land on lights up as it moves.
     - **Clicking a verb** adds it under the selected tile.
     - **Required values first:** a verb with required parameters asks for them before it's written, showing the line it will write. Text values are quoted for you.
     - **After it's written,** the new module is selected.
-  - **Moving:** ⌥-dragging a tile onto another moves it, and everything under it, under that tile. Meep2 has no edit for this, so the canvas writes the text itself (`BranchMove`, in CodeEditing).
+  - **Moving:** dragging a tile onto another moves it, and everything under it, under that tile. (First built as ⌥-drag; step 6 made it a plain drag, as you asked.) Meep2 has no edit for this, so the canvas writes the text itself (`BranchMove`, in CodeEditing).
     - **What moves:** the branch's lines, with any comment written right above it, put after the target's branch at the indentation of the target's other modules.
     - **Keys:** Meep2's matching keeps the moved modules' keys (Q195).
     - **Refused:** moves into a module's own branch, out of templates and includes, and of `+` lines, each saying why.
@@ -97,7 +97,7 @@ Against a test daemon running `shapes.meep` with `meep start --watch`, from Meep
 
 ## Not checked
 
-- **Dragging a verb onto a wire or the background, and ⌥-dragging a tile,** weren't tried in the app. Background control can't hold a modifier during a drag, or drag out of a popover. The code paths they use are tested: wire inserts and moves through `BranchMove` against the real `meep lsp`, and drops through the stage's hit-testing. Clicking in the palette, which uses the same path as a drop on a tile, was tried.
+- **Dragging a verb onto a wire or the background, and ⌥-dragging a tile,** weren't tried in the app. When you tried them, the palette's drags didn't work; step 6 fixed them and tried each by hand. Background control can't hold a modifier during a drag, or drag out of a popover. The code paths they use are tested: wire inserts and moves through `BranchMove` against the real `meep lsp`, and drops through the stage's hit-testing. Clicking in the palette, which uses the same path as a drop on a tile, was tried.
 - **Typing in the inspector's fields** wasn't tried: background control can't type into them. The same edits went through the canvas and a proposal.
 - **⌘Z with the canvas focused** was tried through the Edit menu, not the key.
 

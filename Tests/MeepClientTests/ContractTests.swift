@@ -113,6 +113,22 @@ struct ContractTests {
         #expect(DaemonConnection.escape("busy") == "busy")
         #expect(DaemonConnection.escape("a b/c") == "a%20b%2Fc")
     }
+
+    @Test func aTappedMessageHasItsContentAndAncestors() throws {
+        let frame = try MeepJSON.decoder.decode(EventFrame<TapEvent>.self, from: fixture("tap-error"))
+        let event = try #require(frame.data)
+        #expect(event.dropped == 3)
+        #expect(event.message.isError)
+        #expect(event.message.emittedBy == "Risky")
+        #expect(event.message.content?["Error"]?.string?.contains("divide by zero") == true)
+        #expect(event.message.fam?.first?.emittedBy == "Fast")
+        #expect(event.message.fam?.first?.type == "Tick")
+    }
+
+    @Test func aConditionStaysOneValueOfTheQuery() {
+        #expect(DaemonConnection.escapeQuery("msg.Count % 2 == 0 and msg.Name = \"a+b\"")
+            == "msg.Count%20%25%202%20%3D%3D%200%20and%20msg.Name%20%3D%20%22a%2Bb%22")
+    }
 }
 
 extension StatsEvent {
@@ -120,4 +136,5 @@ extension StatsEvent {
         if case .stats = self { return true }
         return false
     }
+
 }

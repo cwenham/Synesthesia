@@ -34,8 +34,10 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
     private let stage: PipelineStage
     private let renderer: StageRenderer
     private var dragged = false
-    /// The tile being ⌥-dragged to move it.
-    private var movingTile: String?
+    /// The tile pressed on, which a drag moves.
+    private var pressedTile: String?
+    /// Where the mouse went down, to tell a drag from a click.
+    private var pressedAt: CGPoint = .zero
 
     init(stage: PipelineStage, renderer: StageRenderer) {
         self.stage = stage
@@ -47,6 +49,8 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         let background = Theme.background
         clearColor = MTLClearColor(red: Double(background.x), green: Double(background.y), blue: Double(background.z), alpha: 1)
         delegate = self
+        // Verbs from the palette and messages from probes are dropped here, as text.
+        registerForDraggedTypes([.string])
         setAccessibilityRole(.group)
         setAccessibilityLabel("Pipeline \(stage.pipeline.name)")
     }
@@ -99,11 +103,13 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         dragged = false
-        // ⌥-dragging a tile moves it, and everything under it, under the tile it's dropped on.
-        if event.modifierFlags.contains(.option), case .tile(let key)? = stage.hit(at: location(of: event)), stage.editing != nil {
-            movingTile = key
+        // A drag that starts on a tile moves it, and everything under it, under the tile it's dropped on; one that
+        // starts on the background moves the view.
+        pressedAt = location(of: event)
+        if case .tile(let key)? = stage.hit(at: pressedAt), stage.editing != nil, !event.modifierFlags.contains(.command) {
+            pressedTile = key
         } else {
-            movingTile = nil
+            pressedTile = nil
         }
         if event.clickCount == 2 {
             // The background fits the pipeline; a tile opens its text beside the canvas.
@@ -115,33 +121,32 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         }
     }
 
-    /// Dragging moves the view; ⌥-dragging a tile moves its branch, lighting the tile it would go under.
+    /// Dragging the background moves the view; dragging a tile carries its ghost, lighting the tile it would go under.
     override func mouseDragged(with event: NSEvent) {
-        dragged = true
-        if let movingTile {
-            NSCursor.dragCopy.set()
-            if case .tile(let key)? = stage.hit(at: location(of: event)), key != movingTile {
-                stage.dropTarget = .tile(key)
-            } else {
-                stage.dropTarget = nil
-            }
+        let point = location(of: event)
+        if let pressedTile {
+            // A few points of wobble is still a click.
+            guard dragged || hypot(point.x - pressedAt.x, point.y - pressedAt.y) > 4 else { return }
+            dragged = true
+            NSCursor.closedHand.set()
+            stage.hover(at: nil)
+            stage.dragTile(pressedTile, to: point)
             return
         }
+        dragged = true
         NSCursor.closedHand.set()
         stage.pan(by: CGVector(dx: event.deltaX, dy: event.deltaY))
         stage.hover(at: nil)
     }
 
     override func mouseUp(with event: NSEvent) {
-        if let moving = movingTile {
-            movingTile = nil
+        if let moving = pressedTile, dragged {
+            pressedTile = nil
             NSCursor.arrow.set()
-            if case .tile(let target)? = stage.dropTarget {
-                stage.editing?.move(moving, under: target)
-            }
-            stage.dropTarget = nil
-            if dragged { return }
+            stage.editing?.move(moving, under: stage.endTileDrag())
+            return
         }
+        pressedTile = nil
         if dragged {
             NSCursor.arrow.set()
             stage.hover(at: location(of: event))
@@ -183,12 +188,23 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         }
     }
 
-    /// A tile's menu: show it in the text, or delete it.
+    /// A tile's menu: probe it, send it a message, show it in the text, or delete it. A wire's: probe it.
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard case .tile(let key)? = stage.hit(at: location(of: event)) else { return nil }
+        let hit = stage.hit(at: location(of: event))
+        if case .wire(let key)? = hit, let editing = stage.editing {
+            let menu = NSMenu()
+            menu.addItem(ClosureMenuItem("Probe Wire") { editing.probe(.wire(key)) })
+            return menu
+        }
+        guard case .tile(let key)? = hit else { return nil }
         if !stage.selection.contains(key) { stage.select([key], reveal: false) }
         let keys = stage.selection
         let menu = NSMenu()
+        if let editing = stage.editing {
+            menu.addItem(ClosureMenuItem("Probe Output") { editing.probe(.module(key)) })
+            menu.addItem(ClosureMenuItem("Send a Message…") { editing.compose(into: key) })
+            menu.addItem(.separator())
+        }
         menu.addItem(ClosureMenuItem("Show in Text") { [stage] in stage.requestText(at: key) })
         if let editing = stage.editing {
             menu.addItem(.separator())
@@ -196,7 +212,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
             menu.addItem(ClosureMenuItem(label) { editing.delete(keys, branch: false) })
             menu.addItem(ClosureMenuItem(label + " with Everything Under It") { editing.delete(keys, branch: true) })
             menu.addItem(.separator())
-            let hint = NSMenuItem(title: "⌥-drag a tile onto another to move it there", action: nil, keyEquivalent: "")
+            let hint = NSMenuItem(title: "Drag a tile onto another to move it there", action: nil, keyEquivalent: "")
             hint.isEnabled = false
             menu.addItem(hint)
         }
@@ -227,6 +243,38 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         default:
             return true
         }
+    }
+
+    // MARK: Drops
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        draggingUpdated(sender)
+    }
+
+    /// Lights what a drop would land on: a tile, or a wire.
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard stage.editing != nil, sender.draggingPasteboard.availableType(from: [.string]) != nil else { return [] }
+        // While something is dragged over, what it would land on is lit, and nothing shows as hovered.
+        stage.hover(at: nil)
+        stage.dropTarget = stage.hit(at: convert(sender.draggingLocation, from: nil))
+        return .copy
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        stage.dropTarget = nil
+        stage.hover(at: nil)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let hit = stage.hit(at: convert(sender.draggingLocation, from: nil))
+        stage.dropTarget = nil
+        guard let payload = sender.draggingPasteboard.string(forType: .string), let editing = stage.editing else { return false }
+        window?.makeFirstResponder(self)
+        return editing.drop(payload, on: hit)
+    }
+
+    override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        stage.dropTarget = nil
     }
 
     // MARK: VoiceOver

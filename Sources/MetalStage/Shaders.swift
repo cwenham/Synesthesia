@@ -359,6 +359,13 @@ fragment float4 particle_fragment(ParticleOut in [[stage_in]], constant Uniforms
         float core = clamp(0.5 - (d - r * 0.75) / px, 0.0, 1.0);
         float head = 0.25 + 0.75 * (along + halfLength) / (2 * halfLength);
         alpha = core * head;
+    } else if (in.style == 3) {
+        // A real message: a ring round a bright core, with a glow, unlike the dots and streaks counts make.
+        float d = length(in.local);
+        float ring = clamp(0.5 - (abs(d - r) - max(r * 0.18, 0.6 * px)) / px, 0.0, 1.0);
+        float core = clamp(0.5 - (d - r * 0.38) / px, 0.0, 1.0);
+        float halo = exp(-(d * d) / (r * r * 2.5)) * 0.35;
+        alpha = max(max(ring, core), halo);
     } else {
         float d = length(in.local);
         float core = clamp(0.5 - (d - r) / px, 0.0, 1.0);

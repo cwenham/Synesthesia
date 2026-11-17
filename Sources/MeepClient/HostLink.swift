@@ -23,6 +23,16 @@ public protocol HostLink: Sendable {
     /// running as it was, when the file doesn't load.
     func reload(_ name: String) async throws
 
+    /// A copy of each message a module emits or passes on, as a debug tap sees it, until the stream is dropped or the
+    /// pipeline stops. `module` is its number or name. `condition` is a Meeplang condition on `msg`, as `Where` takes;
+    /// `sample` is the share of messages to show, from just over 0 to 1. A tap never holds the pipeline up: when its
+    /// reader falls behind it leaves messages out, and says how many.
+    func tap(_ pipeline: String, module: String, where condition: String?, sample: Double?) -> AsyncThrowingStream<TapEvent, any Error>
+
+    /// Sends a message into a module as a test, as if it came from upstream (or for a source, as if it had made it).
+    /// Needs the daemon's inject capability.
+    func inject(_ pipeline: String, module: String, _ body: InjectBody) async throws -> Injected
+
     /// A pipeline's counts every so often, and notices when its graph changes, until it ends or the stream is
     /// dropped. A restarted pipeline's counts start again from zero.
     func stats(_ name: String, every interval: Duration) -> AsyncThrowingStream<StatsEvent, any Error>

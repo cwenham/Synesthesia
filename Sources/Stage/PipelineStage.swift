@@ -109,16 +109,32 @@ public struct ProposalGraph: Equatable, Sendable {
     }
 }
 
-/// What the canvas asks of whoever makes edits, such as the app's editing of the text: the platform's canvas sends
-/// it the gestures that change the pipeline.
+/// What the canvas asks of the app: the platform's canvas sends it the gestures that change the pipeline, probe it,
+/// or send messages into it.
 @MainActor
 public protocol StageEditing: AnyObject {
+    /// Opens a probe on a module's output or a wire.
+    func probe(_ target: Probe.Target)
+    /// Opens the composer to send a message into a module.
+    func compose(into key: String)
     /// Takes modules out; with `branch`, everything under them too.
     func delete(_ keys: Set<String>, branch: Bool)
-    /// Moves a module, and everything under it, under another.
-    func move(_ key: String, under target: String)
+    /// Moves a module, and everything under it, under another; with nil, it was dropped where it can't go.
+    func move(_ key: String, under target: String?)
+    /// Something dragged from elsewhere, such as a verb or a message, dropped on a tile, a wire or the background.
+    /// Returns whether it was taken.
+    func drop(_ payload: String, on hit: StageHit?) -> Bool
     /// The text's undo history, for ⌘Z on the canvas.
     var undoManager: UndoManager? { get }
+}
+
+/// A probe, or one of its messages, clicked on the canvas.
+public struct OpenedMessage: Equatable, Sendable {
+    /// A number that's new each time, so clicking the same one again opens it again.
+    public let id: Int
+    public let probe: UUID
+    /// The message's id, or nil for the probe's mark.
+    public let message: String?
 }
 
 /// Asks for the text beside the canvas, scrolled to a module.
@@ -154,6 +170,17 @@ public final class PipelineStage {
     public private(set) var proposal: ProposalGraph?
     /// What a drag would drop onto now, lit as if hovered.
     @ObservationIgnored public var dropTarget: StageHit?
+    /// The probes open on this pipeline, drawn as marks where they're on, with their messages as tracers.
+    @ObservationIgnored public var probes: [Probe] = []
+    /// Modules and wires, by key, lit as the path a message would take, before it's sent.
+    @ObservationIgnored public var litPath: Set<String> = []
+    /// A probe or one of its messages, clicked on the canvas, for the probe's panel to show.
+    public private(set) var openedMessage: OpenedMessage?
+    @ObservationIgnored private var injections: [(key: String, time: Double)] = []
+    /// A tile being dragged, and where the pointer is, in view points.
+    @ObservationIgnored private var draggedTile: (key: String, point: CGPoint)?
+    @ObservationIgnored private var drawnTracers: [(opened: OpenedMessage, position: CGPoint)] = []
+    @ObservationIgnored private var openings = 0
     /// Whoever makes the edits the canvas's gestures ask for.
     @ObservationIgnored public weak var editing: (any StageEditing)?
 
@@ -272,7 +299,7 @@ public final class PipelineStage {
         }
         for link in shownLinks {
             guard var wire = wires[link.key] else { continue }
-            wire.isHovered = hovered == .wire(link.key) || dropTarget == .wire(link.key)
+            wire.isHovered = hovered == .wire(link.key) || dropTarget == .wire(link.key) || litPath.contains(link.key)
             if link.isProposed {
                 wire.color = Theme.proposed.with(alpha: 0.6)
             } else if link.isRemoved {
@@ -302,6 +329,8 @@ public final class PipelineStage {
             add(flows.errors.draw(on: wire, rate: counts.errorRate, at: time, color: Theme.error), to: &snapshot, over: false)
             wireFlows[link.key] = flows
         }
+
+        drawProbes(into: &snapshot, faces: faces)
 
         // Tiles, with what ends inside them, spills off them, and waits at them.
         for key in order {
@@ -339,11 +368,13 @@ public final class PipelineStage {
             let ghost = module.isNew || module.isBeingEdited || module.isProposed || module.isRemoved
             snapshot.tiles.append(StageTile(
                 id: key, shape: tile.shape, frame: face, color: color, flash: current ? flash : 0,
-                isHovered: hovered == .tile(key) || pointedFromText == key || dropTarget == .tile(key), isSelected: selection.contains(key),
+                isHovered: hovered == .tile(key) || pointedFromText == key || dropTarget == .tile(key) || litPath.contains(key),
+                isSelected: selection.contains(key),
                 isDimmed: (!current || module.isNew) && !module.isProposed && !module.isRemoved, isGhost: ghost
             ))
             addLabel(for: module, tile: tile, face: face, current: current, into: &snapshot)
         }
+        drawDraggedTile(into: &snapshot)
         return snapshot
     }
 
@@ -579,6 +610,12 @@ public final class PipelineStage {
 
     /// A click: selects the tile under it, or clears the selection. ⌘ adds or removes one tile, as in Finder.
     public func click(at point: CGPoint, modifiers: StageModifiers = []) {
+        // A real message, or a probe's mark, opens in the probe's panel.
+        if let opened = tracer(at: point) {
+            openings += 1
+            openedMessage = OpenedMessage(id: openings, probe: opened.probe, message: opened.message)
+            return
+        }
         guard case .tile(let key)? = hit(at: point) else {
             if !modifiers.contains(.command) { selection = [] }
             return
@@ -862,6 +899,149 @@ public final class PipelineStage {
     public func requestText(at key: String?) {
         textRequests += 1
         textRequest = TextRequest(id: textRequests, key: key)
+    }
+
+    // MARK: Dragging tiles
+
+    /// A tile being dragged is under the pointer at `point`: its ghost follows the pointer, and the tile it would go
+    /// under is lit, if it can go there.
+    public func dragTile(_ key: String, to point: CGPoint) {
+        draggedTile = (key, point)
+        if case .tile(let target)? = hit(at: point), canMove(key, under: target) {
+            dropTarget = .tile(target)
+        } else {
+            dropTarget = nil
+        }
+    }
+
+    /// The drag has ended: the tile it would go under, if it's over one it can go under.
+    public func endTileDrag() -> String? {
+        defer {
+            draggedTile = nil
+            dropTarget = nil
+        }
+        guard case .tile(let target)? = dropTarget else { return nil }
+        return target
+    }
+
+    /// Whether a module can go under another: not under itself, anything under it, or where it is already.
+    public func canMove(_ key: String, under target: String) -> Bool {
+        guard key != target, let module = shownModule(key), shownModule(target) != nil else { return false }
+        if module.graph?.under == target { return false }
+        var children: [String: [String]] = [:]
+        for shown in shownModules {
+            if let under = shown.graph?.under { children[under, default: []].append(shown.key) }
+        }
+        var frontier = [key]
+        while let next = frontier.popLast() {
+            for child in children[next] ?? [] {
+                if child == target { return false }
+                frontier.append(child)
+            }
+        }
+        return true
+    }
+
+    /// The dragged tile's ghost, under the pointer, above everything else.
+    private func drawDraggedTile(into snapshot: inout StageSnapshot) {
+        guard let (key, point) = draggedTile, let tile = tiles[key] else { return }
+        let world = camera.worldPoint(point, in: viewSize)
+        let frame = CGRect(x: world.x - tile.size.width / 2, y: world.y - tile.size.height / 2, width: tile.size.width, height: tile.size.height)
+        snapshot.tiles.append(StageTile(id: "\(key).dragged", shape: tile.shape, frame: frame, color: tile.color, isGhost: true))
+    }
+
+    // MARK: Probes and real messages
+
+    /// The probes' colours, distinct from the roles', in the order probes take them.
+    public static let probeColors: [StageColor] = [
+        StageColor(hex: 0xFFFFFF), StageColor(hex: 0xFFE27A), StageColor(hex: 0x9CF0FF), StageColor(hex: 0xFFB0E6), StageColor(hex: 0xB9FFB0),
+    ]
+
+    public static func color(ofProbe index: Int) -> StageColor {
+        probeColors[((index % probeColors.count) + probeColors.count) % probeColors.count]
+    }
+
+    /// How long a real message takes to cross its wire.
+    static let tracerSeconds = 1.0
+
+    /// Shows a message sent into a module arriving at it.
+    public func traceInjection(into key: String) {
+        injections.append((key, time))
+    }
+
+    /// Each probe's mark, and its recent messages as tracers along the wires they took; messages sent in, arriving.
+    private func drawProbes(into snapshot: inout StageSnapshot, faces: [String: CGRect]) {
+        drawnTracers.removeAll(keepingCapacity: true)
+        let now = ProcessInfo.processInfo.systemUptime
+        for probe in probes {
+            let color = Self.color(ofProbe: probe.colorIndex)
+            // The mark: at the module's outlet, or half way along the wire.
+            var mark: CGPoint?
+            switch probe.target {
+            case .module(let key):
+                if let face = faces[key], let tile = tiles[key] {
+                    mark = CGPoint(x: face.midX + tile.shape.rightEdge(atY: 0, size: tile.size) + 4, y: face.midY)
+                }
+            case .wire(let key):
+                if let wire = wires[key] { mark = wire.point(at: wire.length / 2).point }
+            }
+            if let mark {
+                snapshot.overParticles.append(StageParticle(position: mark, color: color, size: 5.5, style: .tracer, owner: "probe:\(probe.id)"))
+                drawnTracers.append((OpenedMessage(id: 0, probe: probe.id, message: nil), mark))
+            }
+            // Its messages, each crossing the wires it took.
+            let recent = probe.arrivals.filter { now - $0.time < Self.tracerSeconds }.suffix(16)
+            let routes: [StageWire] = switch probe.target {
+            case .wire(let key): wires[key].map { [$0] } ?? []
+            case .module(let key): shownLinks.filter { $0.from == key }.compactMap { wires[$0.key] }
+            }
+            for arrival in recent {
+                let progress = CGFloat((now - arrival.time) / Self.tracerSeconds)
+                let tint = arrival.isError ? Theme.error.mixed(with: color, by: 0.3) : color
+                for wire in routes where wire.kind != .errors || arrival.isError {
+                    let point = wire.point(at: wire.length * min(max(progress, 0), 1)).point
+                    snapshot.overParticles.append(StageParticle(position: point, color: tint, size: 3.6, style: .tracer, owner: "tracer:\(arrival.id)"))
+                    drawnTracers.append((OpenedMessage(id: 0, probe: probe.id, message: arrival.id), point))
+                }
+            }
+        }
+        // Messages sent in, along the wires into their module, or out of a source.
+        injections.removeAll { time - $0.time > Self.tracerSeconds * 1.5 }
+        for injection in injections {
+            let into = shownLinks.filter { $0.to == injection.key }.compactMap { wires[$0.key] }
+            let out = shownLinks.filter { $0.from == injection.key }.compactMap { wires[$0.key] }
+            let progress = CGFloat((time - injection.time) / Self.tracerSeconds)
+            for wire in into.isEmpty ? out : into {
+                let point = wire.point(at: wire.length * min(max(progress, 0), 1)).point
+                snapshot.overParticles.append(StageParticle(position: point, color: StageColor(1, 1, 1, 1), size: 4.2, style: .tracer, owner: "injected"))
+            }
+        }
+    }
+
+    /// The probe mark or real message drawn nearest `point`, in view points, if one is close enough to click.
+    public func tracer(at point: CGPoint) -> (probe: UUID, message: String?)? {
+        let world = camera.worldPoint(point, in: viewSize)
+        let reach = 7 / camera.scale + 1
+        var best: (OpenedMessage, CGFloat)?
+        for drawn in drawnTracers {
+            let distance = hypot(drawn.position.x - world.x, drawn.position.y - world.y)
+            if distance <= reach, distance < best?.1 ?? .infinity { best = (drawn.opened, distance) }
+        }
+        return best.map { ($0.0.probe, $0.0.message) }
+    }
+
+    /// The modules and wires a message sent into `key` would take: everything downstream, along wires that carry
+    /// messages that aren't errors.
+    public func path(from key: String) -> Set<String> {
+        var lit: Set<String> = [key]
+        var frontier = [key]
+        while let next = frontier.popLast() {
+            for link in shownLinks where link.from == next && link.port != .errors {
+                lit.insert(link.key)
+                if lit.insert(link.to).inserted { frontier.append(link.to) }
+            }
+        }
+        return lit
     }
 
     private func mix(_ a: CGRect, _ b: CGRect, _ t: CGFloat) -> CGRect {

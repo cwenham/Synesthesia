@@ -133,6 +133,8 @@ public enum ParticleStyle: Int32, Sendable {
     case rate = 1
     /// Fading as it goes, for messages that end inside a module or spill off it.
     case fading = 2
+    /// A real message, from a probe or sent in: a ring round a bright core, which opens the message when clicked.
+    case tracer = 3
 }
 
 /// Evenly spaced particles moving along a path, drawn on the GPU from the path, a spacing and a running phase, so a

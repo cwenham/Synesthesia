@@ -35,8 +35,35 @@ public final class Workspace {
         public let line: Int?
     }
 
+    /// Each pipeline's probes, by the pipeline's id, in the order they were opened.
+    public private(set) var probes: [String: [Probe]] = [:]
+    /// A message waiting to be sent, in the composer, until the person sends it or doesn't.
+    public private(set) var injection: InjectionRequest?
+
+    /// A message to send into a module, shown in the composer before it goes (design, section 6).
+    public struct InjectionRequest: Identifiable, Equatable, Sendable {
+        public let id: Int
+        public let pipeline: String
+        public let key: String
+        /// The text or JSON to start with.
+        public let body: String
+        public let isJSON: Bool
+        /// Who asked: the person, or a tool such as Claude's.
+        public let askedBy: String?
+    }
+
+    /// What became of a message in the composer.
+    public enum InjectionOutcome: Equatable, Sendable {
+        case sent(Injected)
+        /// The person closed the composer without sending it, or another took its place.
+        case notSent
+    }
+
     @ObservationIgnored private var focuses = 0
     @ObservationIgnored private var opening: Set<String> = []
+    @ObservationIgnored private var injections = 0
+    @ObservationIgnored private var injectionWaiting: (id: Int, continuation: CheckedContinuation<InjectionOutcome, Never>)?
+    @ObservationIgnored private var loadedProbes: Set<String> = []
 
     public init(continuum: Continuum, language: LanguageService? = nil) {
         self.continuum = continuum
@@ -102,6 +129,95 @@ public final class Workspace {
         showsText = true
         focuses += 1
         textFocus = TextFocus(id: focuses, pipeline: pipeline.id, key: nil, line: line)
+    }
+
+    // MARK: Probes
+
+    public func probes(for pipeline: MeepPipeline) -> [Probe] {
+        probes[pipeline.id] ?? []
+    }
+
+    /// Opens a probe on a module's output or a wire, or shows the one already there.
+    @discardableResult
+    public func openProbe(on target: Probe.Target, in pipeline: MeepPipeline, host: MeepHost, condition: String = "", sample: Double = 1) -> Probe {
+        if let open = probes(for: pipeline).first(where: { $0.target == target && $0.condition == condition }) {
+            if open.state == .paused { open.start() }
+            return open
+        }
+        let used = Set(probes(for: pipeline).map(\.colorIndex))
+        let color = (0..<20).first { !used.contains($0) } ?? probes(for: pipeline).count
+        let probe = Probe(pipeline: pipeline, host: host, target: target, condition: condition, sample: sample, colorIndex: color)
+        probes[pipeline.id, default: []].append(probe)
+        probe.start()
+        return probe
+    }
+
+    public func closeProbe(_ probe: Probe) {
+        probe.stop()
+        probes[probe.pipeline.id]?.removeAll { $0 === probe }
+        if probe.isSaved { saveProbes(for: probe.pipeline) }
+    }
+
+    /// Opens the probes kept with a pipeline's file, once, for a pipeline on this Mac.
+    public func openSavedProbes(for pipeline: MeepPipeline, host: MeepHost) {
+        guard case .local = host.kind, !loadedProbes.contains(pipeline.id) else { return }
+        loadedProbes.insert(pipeline.id)
+        for saved in ProbeStore.load(for: pipeline.path) {
+            // Keys can change when a pipeline starts again; what it was on is found by its label if so.
+            let target: Probe.Target
+            switch saved.target {
+            case .module(let key) where pipeline.module(key) == nil:
+                guard let found = pipeline.modules.first(where: { "\($0.label) out" == saved.label }) else { continue }
+                target = .module(found.key)
+            default:
+                target = saved.target
+            }
+            let probe = openProbe(on: target, in: pipeline, host: host, condition: saved.condition, sample: saved.sample)
+            probe.isSaved = true
+        }
+    }
+
+    /// Writes the probes kept for a pipeline to `.synesthesia/probes.json` beside its file.
+    public func saveProbes(for pipeline: MeepPipeline) {
+        let kept = probes(for: pipeline).filter(\.isSaved).map {
+            ProbeStore.Saved(file: (pipeline.path as NSString).lastPathComponent, target: $0.target, label: $0.title, condition: $0.condition, sample: $0.sample)
+        }
+        try? ProbeStore.save(kept, for: pipeline.path)
+    }
+
+    /// Stops a pipeline's probes while it isn't showing, or starts them again.
+    public func setProbesRunning(_ running: Bool, for pipeline: MeepPipeline) {
+        for probe in probes(for: pipeline) {
+            if running, probe.state == .paused { probe.start() } else if !running { probe.stop() }
+        }
+    }
+
+    // MARK: Sending messages
+
+    /// Opens the composer with a message to send into a module, which the person sends or doesn't.
+    public func compose(into key: String, of pipeline: MeepPipeline, body: String = "", isJSON: Bool = false, askedBy: String? = nil) {
+        selection = pipeline.address
+        injections += 1
+        if let waiting = injectionWaiting {
+            injectionWaiting = nil
+            waiting.continuation.resume(returning: .notSent)
+        }
+        injection = InjectionRequest(id: injections, pipeline: pipeline.id, key: key, body: body, isJSON: isJSON, askedBy: askedBy)
+    }
+
+    /// Waits for the person to send the message in the composer, or not.
+    public func outcome(of request: InjectionRequest) async -> InjectionOutcome {
+        guard injection?.id == request.id else { return .notSent }
+        return await withCheckedContinuation { injectionWaiting = (request.id, $0) }
+    }
+
+    /// The composer has closed, having sent its message or not.
+    public func finishInjection(_ request: InjectionRequest, _ outcome: InjectionOutcome) {
+        if injection?.id == request.id { injection = nil }
+        if let waiting = injectionWaiting, waiting.id == request.id {
+            injectionWaiting = nil
+            waiting.continuation.resume(returning: outcome)
+        }
     }
 
     /// Closes every text, for quitting.

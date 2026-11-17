@@ -1,5 +1,6 @@
 import Foundation
 import Transport
+import MeepClient
 
 /// The Model Context Protocol, served over one connection: JSON-RPC 2.0 messages, one to a line, as MCP's stdio
 /// transport has them. The app serves it on a Unix socket, and `synesthesia-mcp` joins a client's standard input and

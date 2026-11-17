@@ -156,3 +156,76 @@ actor Counter {
     private(set) var value = 0
     func add() { value += 1 }
 }
+
+@MainActor
+struct ProbeTests {
+    private func following(capabilities: [String] = ["observe"]) async throws -> (MeepHost, HostSession, SimulatedHost) {
+        let continuum = Continuum()
+        let host = continuum.add(host: "sim", kind: .simulated)
+        let link = SimulatedHost(name: "sim", latency: .milliseconds(1), capabilities: capabilities)
+        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(50), listEvery: .milliseconds(50))) { link }
+        session.start()
+        try await waitUntil { host.pipeline("ticker")?.graph != nil && host.link != nil }
+        return (host, session, link)
+    }
+
+    @Test func aProbeKeepsTheLatestMessagesNewestFirst() async throws {
+        let (host, session, _) = try await following()
+        defer { session.stop() }
+        let ticker = try #require(host.pipeline("ticker"))
+        let source = try #require(ticker.modules.first)
+        let probe = Probe(pipeline: ticker, host: host, target: .module(source.key))
+        probe.keep = 3
+        probe.start()
+        try await waitUntil { probe.seen >= 4 }
+        #expect(probe.state == .running)
+        #expect(probe.messages.count == 3)
+        #expect(probe.messages[0].created >= probe.messages[1].created)
+        #expect(probe.title == "\(source.label) out")
+        probe.pause()
+        let seen = probe.seen
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(probe.seen == seen && probe.state == .paused)
+        probe.clear()
+        #expect(probe.messages.isEmpty)
+    }
+
+    @Test func aRefusedConditionEndsTheProbeAndSaysWhy() async throws {
+        let (host, session, _) = try await following()
+        defer { session.stop() }
+        let ticker = try #require(host.pipeline("ticker"))
+        let probe = Probe(pipeline: ticker, host: host, target: .module(try #require(ticker.modules.first).key), condition: "msg.Count > 2")
+        probe.start()
+        try await waitUntil { if case .ended = probe.state { true } else { false } }
+        if case .ended(let reason) = probe.state { #expect(reason.contains("conditions")) }
+    }
+
+    @Test func aWireIntoAnErrorsModuleIsTappedForErrorsOnly() async throws {
+        let (host, session, _) = try await following()
+        defer { session.stop() }
+        try await waitUntil { host.pipelines.contains { $0.links.contains { $0.port == .errors } } }
+        let orders = try #require(host.pipelines.first { $0.links.contains { $0.port == .errors } })
+        let errors = try #require(orders.links.first { $0.port == .errors })
+        let probe = Probe(pipeline: orders, host: host, target: .wire(errors.key), condition: "msg.Count > 2")
+        #expect(probe.tapCondition == "(msg is ErrorMessage) and (msg.Count > 2)")
+        #expect(probe.tappedKey == errors.from)
+        let plain = Probe(pipeline: orders, host: host, target: .module(errors.from))
+        #expect(plain.tapCondition == nil)
+    }
+
+    @Test func savedProbesComeBackForTheirFileAlone() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("synesthesia-probes-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let shapes = folder.appendingPathComponent("shapes.meep").path
+        let other = folder.appendingPathComponent("other.meep").path
+        let keep = ProbeStore.Saved(file: "shapes.meep", target: .wire("m3>m4"), label: "Keep → Log", condition: "msg.Count > 2", sample: 0.5)
+        try ProbeStore.save([keep], for: shapes)
+        try ProbeStore.save([ProbeStore.Saved(file: "other.meep", target: .module("m1"), label: "Ticks out", condition: "", sample: 1)], for: other)
+        #expect(ProbeStore.load(for: shapes) == [keep])
+        #expect(ProbeStore.load(for: other).map(\.label) == ["Ticks out"])
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".synesthesia/probes.json").path))
+        try ProbeStore.save([], for: shapes)
+        #expect(ProbeStore.load(for: shapes).isEmpty)
+        #expect(ProbeStore.load(for: other).count == 1)
+    }
+}

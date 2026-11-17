@@ -33,6 +33,20 @@ public protocol Viewer: AnyObject {
     /// Shows edits to a pipeline's text as a proposal (ghost tiles and a diff) and waits for the person to accept or
     /// reject them, for at most `timeout`. Throws why if they can't be proposed, such as an edit that can't be made.
     func propose(_ edits: [MeepEdit], summary: String, to pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async throws -> ProposalResult
+    /// Shows a message in the composer, ready to send into a module, and waits for the person to send it or not, for
+    /// at most `timeout`.
+    func inject(_ body: InjectBody, into key: String, of pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async -> InjectionResult
+    /// The probes open on a pipeline.
+    func probes(for pipeline: MeepPipeline) -> [Probe]
+}
+
+/// What became of a message offered to the person to send.
+public enum InjectionResult: Equatable, Sendable {
+    case sent(Injected)
+    /// The person closed the composer without sending it.
+    case notSent
+    /// No decision in time; the composer is still open.
+    case undecided
 }
 
 /// What became of edits proposed to the person.
@@ -60,7 +74,8 @@ public enum ContinuumTools {
         they are; describe_verbs says what each verb does and takes. describe_view says what the canvas and the \
         text beside it show, which is cheaper and more exact than capture_view's image. show points the app at an \
         address so the person can see what you mean. propose_edits shows changes to a pipeline's text for the \
-        person to accept or reject; nothing changes unless they accept.
+        person to accept or reject; nothing changes unless they accept. sample_tap shows real messages a module \
+        emits or passes on; inject_message offers a message for the person to send into a module.
         """
 
     public static func registry(for viewer: Viewer) -> ToolRegistry {
@@ -74,6 +89,8 @@ public enum ContinuumTools {
             captureView(viewer),
             show(viewer),
             proposeEdits(viewer),
+            sampleTap(viewer),
+            injectMessage(viewer),
         ])
     }
 
@@ -304,6 +321,15 @@ public enum ContinuumTools {
             if viewer.showsText, let document = viewer.document(for: stage.pipeline) {
                 result["text"] = describe(document)
             }
+            let probes = viewer.probes(for: stage.pipeline)
+            if !probes.isEmpty {
+                result["probes"] = .array(probes.map { probe in
+                    var entry: [String: JSONValue] = ["on": .string(probe.title), "seen": .number(Double(probe.seen)), "state": .string(String(describing: probe.state))]
+                    if !probe.condition.isEmpty { entry["where"] = .string(probe.condition) }
+                    if probe.notShown > 0 { entry["notShown"] = .number(Double(probe.notShown)) }
+                    return .object(entry)
+                })
+            }
             return .json(.object(result))
         }
     }
@@ -348,6 +374,123 @@ public enum ContinuumTools {
             }
             viewer.stage?.show(module.key)
             return .json(["shown": .string(pipeline.address.module(module.key).description), "label": .string(module.label)])
+        }
+    }
+
+    // MARK: Debugging
+
+    static func sampleTap(_ viewer: Viewer) -> Tool {
+        Tool(
+            name: "sample_tap", title: "Sample a module's messages",
+            description: "Opens a debug tap on a module for a few seconds and returns the real messages it emits or passes on: each one's type, time, the module that made it, its content (long text cut short) and its nearest ancestors (fam). A tap never slows the pipeline; if it falls behind it leaves messages out and says how many. These are real message contents, which may be sensitive: quote only what you need. To see what goes to an @errors module, use the condition msg is ErrorMessage.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "address": addressSchema,
+                    "where": ["type": "string", "description": "A Meeplang condition on msg, as Where takes, such as msg.Count > 2 or msg is ErrorMessage."],
+                    "sample": ["type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "The share of messages to take, such as 0.1."],
+                    "seconds": ["type": "number", "minimum": 1, "maximum": 30, "default": 5, "description": "How long to listen."],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "Stop after this many messages."],
+                ],
+                "required": ["address"],
+            ]
+        ) { arguments in
+            let (host, pipeline, module) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
+            guard let module else { throw ToolError("Give a module's address, such as meep://local/orders/m3: a tap is on one module's output.") }
+            guard let link = host.link else { throw ToolError("\(host.title) can't be reached.") }
+            let seconds = min(max(arguments["seconds"]?.number ?? 5, 1), 30)
+            let limit = Int(min(max(arguments["limit"]?.number ?? 20, 1), 100))
+            let condition = arguments["where"]?.string
+            let sample = arguments["sample"]?.number
+            var messages: [TappedMessage] = []
+            var dropped: Int64 = 0
+            let stream = link.tap(pipeline!.name, module: "\(module.number)", where: condition, sample: sample)
+            let collecting = Task {
+                var found: [TapEvent] = []
+                for try await event in stream {
+                    found.append(event)
+                    if found.count >= limit { break }
+                }
+                return found
+            }
+            let timer = Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                collecting.cancel()
+            }
+            do {
+                let events = try await collecting.value
+                messages = events.map(\.message)
+                dropped = (events.last?.dropped ?? 0) - (events.first?.dropped ?? 0)
+            } catch is CancellationError {
+            } catch {
+                timer.cancel()
+                throw ToolError(error.localizedDescription)
+            }
+            timer.cancel()
+            return .json([
+                "module": .string(pipeline!.address.module(module.key).description),
+                "messages": .array(messages.map(describe)),
+                "leftOut": .number(Double(max(dropped, 0))),
+                "note": .string(messages.isEmpty ? "No messages in \(Int(seconds)) seconds\(condition == nil ? "" : " that met the condition")." : "Newest last. These are real message contents."),
+            ])
+        }
+    }
+
+    static func describe(_ message: TappedMessage) -> JSONValue {
+        var entry: [String: JSONValue] = [
+            "type": .string(message.type), "id": .string(message.id),
+            "created": .string(Self.preciseTime.string(from: message.created)),
+        ]
+        if let from = message.emittedBy { entry["emittedBy"] = .string(from) }
+        if let content = message.content { entry["content"] = content }
+        if let fam = message.fam, !fam.isEmpty {
+            entry["fam"] = .array(fam.map { .string("\($0.type)\($0.emittedBy.map { " from " + $0 } ?? "")") })
+        }
+        return .object(entry)
+    }
+
+    /// Times to the millisecond, as messages a few apart need.
+    nonisolated(unsafe) static let preciseTime: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static func injectMessage(_ viewer: Viewer) -> Tool {
+        Tool(
+            name: "inject_message", title: "Offer a message to send into a module",
+            description: "Opens the app's composer with a message to send into a module, as text or JSON, with the path it would take lit on the canvas and any modules that send outside the pipeline named. Nothing is sent unless the person sends it; waits for them, up to the timeout. A message sent into a module goes on as if it came from upstream (into a source, as if it had made it). JSON becomes a JsonMessage. Needs the daemon's inject capability.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "address": addressSchema,
+                    "text": ["type": "string", "description": "The message as text."],
+                    "json": ["description": "The message as JSON, instead of text."],
+                    "timeoutSeconds": ["type": "number", "minimum": 10, "maximum": 1800, "default": 300],
+                ],
+                "required": ["address"],
+            ],
+            readOnly: false
+        ) { arguments in
+            let (host, pipeline, module) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
+            guard let module else { throw ToolError("Give a module's address, such as meep://local/orders/m3.") }
+            let body: InjectBody
+            if let json = arguments["json"] {
+                body = .json(json)
+            } else if let text = arguments["text"]?.string {
+                body = .text(text)
+            } else {
+                throw ToolError("Give the message as text or json.")
+            }
+            let seconds = min(max(arguments["timeoutSeconds"]?.number ?? 300, 10), 1800)
+            switch await viewer.inject(body, into: module.key, of: pipeline!, on: host, timeout: .seconds(seconds)) {
+            case .sent(let injected):
+                return .json(["outcome": "sent", "id": .string(injected.id), "type": .string(injected.type), "module": .string(injected.module)])
+            case .notSent:
+                return .json(["outcome": "notSent", "note": "The person closed the composer without sending it."])
+            case .undecided:
+                return .json(["outcome": "undecided", "note": "The person hasn't sent it yet; the composer is still open."])
+            }
         }
     }
 

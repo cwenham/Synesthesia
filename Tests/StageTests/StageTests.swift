@@ -77,20 +77,21 @@ struct PipelineStageTests {
             .init("Save", .outlet, name: "Rejects", from: [1], errorsOnly: true),
         ])
         let (pipeline, host, session) = try await simulated("faulty", pipelines: [spec])
-        defer { session.stop() }
+        // The test gives the counts for each moment itself, so what it sees doesn't depend on how soon a busy machine
+        // delivers them: in a full run, other suites keep the main actor busy and the session's counts fall behind.
+        session.stop()
         let stage = PipelineStage(pipeline: pipeline, host: host)
-        let start = ProcessInfo.processInfo.systemUptime
+        let started = Date()
         var snapshot = StageSnapshot()
-        // Frames as counts come in: at least two seconds' worth, and on a busy machine until the rates have risen.
-        func shown(_ snapshot: StageSnapshot) -> Bool {
-            snapshot.streams.contains { $0.path.id == "m1>m2" && $0.style == .rate }
-                && snapshot.streams.contains { $0.path.id == "m2>m4" && $0.color == Theme.error }
-                && (snapshot.overStreams.contains { $0.path.id == "m3.dropped" } || snapshot.overParticles.contains { $0.color.x == Theme.dropped.x })
+        // Three seconds, a frame every 20 milliseconds, with the counts as they are at each.
+        for step in 0...150 {
+            let seconds = 10 + Double(step) * 0.02
+            pipeline.apply(PipelineDetail(
+                name: spec.name, path: spec.path, state: .running, started: started, modules: spec.counts(at: seconds),
+                graphVersion: spec.graph.version, links: spec.linkCounts(at: seconds)
+            ), at: seconds)
+            snapshot = stage.frame(at: seconds, viewSize: size)
         }
-        repeat {
-            snapshot = stage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: size)
-            try await Task.sleep(for: .milliseconds(16))
-        } while ProcessInfo.processInfo.systemUptime - start < 2 || !shown(snapshot) && ProcessInfo.processInfo.systemUptime - start < 10
         // Readings arrive at thousands a second, so their wire shows a rate, not single messages.
         let readings = try #require(snapshot.streams.first { $0.path.id == "m1>m2" })
         #expect(readings.style == .rate)
@@ -98,7 +99,7 @@ struct PipelineStageTests {
         // Classify fails about 24 a second, and its errors go to Rejects in red.
         let rejects = stage.link("m2>m4")?.live
         #expect(snapshot.streams.contains { $0.path.id == "m2>m4" && $0.color == Theme.error },
-                "errors at \(rejects?.errorRate ?? -1)/s, counted \(rejects?.isCounted ?? false), \(rejects?.errors ?? -1) so far")
+                "errors at \(rejects?.errorRate ?? -1)/s, \(rejects?.errors ?? -1) so far")
         // Alerts drops some: they spill off its tile.
         #expect(snapshot.overStreams.contains { $0.path.id == "m3.dropped" }
             || snapshot.overParticles.contains { $0.color.x == Theme.dropped.x })
@@ -338,5 +339,108 @@ struct ProposalTests {
         _ = stage.frame(at: 2, viewSize: size)
         #expect(stage.module("m99") == nil)
         #expect(stage.module(removed.key)?.isRemoved == false)
+    }
+}
+
+@MainActor
+struct ProbeDrawingTests {
+    let size = CGSize(width: 1100, height: 560)
+
+    @Test func aProbesMarkAndItsMessagesAreDrawnAndOpenWhenClicked() async throws {
+        let (pipeline, host, session) = try await simulated("orders")
+        defer { session.stop() }
+        let stage = PipelineStage(pipeline: pipeline, host: host)
+        let source = try #require(pipeline.modules.first)
+        let probe = Probe(pipeline: pipeline, host: host, target: .module(source.key), colorIndex: 1)
+        stage.probes = [probe]
+        probe.start()
+        try await waitFor { probe.seen > 0 }
+        var snapshot = stage.frame(at: 1, viewSize: size)
+        let mark = try #require(snapshot.overParticles.first { $0.owner == "probe:\(probe.id)" })
+        #expect(mark.style == .tracer && mark.color == PipelineStage.color(ofProbe: 1))
+        try await waitFor {
+            snapshot = stage.frame(at: 1, viewSize: size)
+            return snapshot.overParticles.contains { $0.owner.hasPrefix("tracer:") }
+        }
+        probe.stop()
+        // Clicking the mark opens the probe.
+        let point = snapshot.camera.viewPoint(mark.position, in: size)
+        stage.click(at: point)
+        #expect(stage.openedMessage?.probe == probe.id)
+        #expect(stage.selection.isEmpty)
+    }
+
+    @Test func aMessagesPathIsEverythingDownstreamThatTakesThem() async throws {
+        let (pipeline, host, session) = try await simulated("warehouse")
+        defer { session.stop() }
+        let stage = PipelineStage(pipeline: pipeline, host: host)
+        _ = stage.frame(at: 1, viewSize: size)
+        let first = try #require(pipeline.modules.first)
+        let path = stage.path(from: first.key)
+        #expect(path.contains(first.key))
+        for link in pipeline.links where path.contains(link.from) && link.port != .errors {
+            #expect(path.contains(link.key) && path.contains(link.to))
+        }
+        #expect(!pipeline.links.contains { $0.port == .errors && path.contains($0.key) })
+    }
+}
+
+/// Waits up to ten seconds for `condition`.
+@MainActor
+func waitFor(_ condition: @MainActor () async -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while !(await condition()) {
+        guard ContinuousClock.now < deadline else { throw CancellationError() }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+}
+
+@MainActor
+struct TileDragTests {
+    let size = CGSize(width: 1100, height: 560)
+
+    @Test func aDraggedTileFollowsThePointerAndLightsOnlyWhereItCanGo() async throws {
+        let (pipeline, host, session) = try await simulated("warehouse")
+        defer { session.stop() }
+        let stage = PipelineStage(pipeline: pipeline, host: host)
+        _ = stage.frame(at: 1, viewSize: size)
+        let graph = try #require(pipeline.graph)
+        let child = try #require(graph.modules.first { $0.under != nil })
+        let parent = try #require(child.under)
+        let other = try #require(graph.modules.first { $0.key != child.key && $0.key != parent && !BranchDescendants.of(child.key, in: graph).contains($0.key) })
+
+        #expect(stage.canMove(child.key, under: other.key))
+        #expect(!stage.canMove(child.key, under: child.key), "not under itself")
+        #expect(!stage.canMove(child.key, under: parent), "not where it is already")
+        #expect(!stage.canMove(parent, under: child.key), "not under what's under it")
+
+        // Over another tile, that tile is lit, and the ghost is drawn under the pointer.
+        let over = try #require(stage.viewFrame(of: other.key))
+        stage.dragTile(child.key, to: CGPoint(x: over.midX, y: over.midY))
+        #expect(stage.dropTarget == .tile(other.key))
+        let snapshot = stage.frame(at: 2, viewSize: size)
+        let ghost = try #require(snapshot.tiles.last)
+        #expect(ghost.id == "\(child.key).dragged" && ghost.isGhost)
+        #expect(stage.endTileDrag() == other.key)
+        #expect(stage.dropTarget == nil)
+
+        // Over its own parent, nothing is lit and nothing would happen.
+        let home = try #require(stage.viewFrame(of: parent))
+        stage.dragTile(child.key, to: CGPoint(x: home.midX, y: home.midY))
+        #expect(stage.dropTarget == nil)
+        #expect(stage.endTileDrag() == nil)
+        #expect(stage.frame(at: 3, viewSize: size).tiles.allSatisfy { !$0.id.hasSuffix(".dragged") })
+    }
+}
+
+/// Everything under a module in a graph.
+enum BranchDescendants {
+    static func of(_ key: String, in graph: PipelineGraph) -> Set<String> {
+        var found: Set<String> = []
+        var frontier = [key]
+        while let next = frontier.popLast() {
+            for module in graph.modules where module.under == next && found.insert(module.key).inserted { frontier.append(module.key) }
+        }
+        return found
     }
 }

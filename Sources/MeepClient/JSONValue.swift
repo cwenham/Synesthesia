@@ -1,6 +1,6 @@
 import Foundation
 
-/// Any JSON value, for the MCP protocol and tools' arguments, schemas and results.
+/// Any JSON value: a tapped message's content, and the MCP protocol's and tools' arguments, schemas and results.
 public enum JSONValue: Sendable, Hashable, Codable, ExpressibleByStringLiteral, ExpressibleByIntegerLiteral,
     ExpressibleByFloatLiteral, ExpressibleByBooleanLiteral, ExpressibleByArrayLiteral, ExpressibleByDictionaryLiteral,
     ExpressibleByNilLiteral {

@@ -18,6 +18,10 @@ enum VerbDrag {
         prefix + "\(verb.verb).\(verb.inflection)"
     }
 
+    static func isVerb(_ payload: String) -> Bool {
+        payload.hasPrefix(prefix)
+    }
+
     static func verb(in payload: String, from verbs: [VerbEntry]) -> VerbEntry? {
         guard payload.hasPrefix(prefix) else { return nil }
         let parts = payload.dropFirst(prefix.count).split(separator: ".", maxSplits: 1).map(String.init)
@@ -64,6 +68,14 @@ struct ModuleInspector: View {
                 Text(entry.map { $0.inflection == $0.verb ? $0.verb : "\($0.verb).\($0.inflection)" } ?? module.verb)
                     .foregroundStyle(.secondary)
                 Spacer()
+                Button { editor.probe(.module(key)) } label: { Image(systemName: "scope") }
+                    .buttonStyle(.borderless)
+                    .help("Probe its output: see the messages it emits or passes on")
+                    .accessibilityLabel("Probe Output")
+                Button { editor.compose(into: key) } label: { Image(systemName: "paperplane") }
+                    .buttonStyle(.borderless)
+                    .help("Send a message into it")
+                    .accessibilityLabel("Send a Message")
                 Menu {
                     Button("Delete", role: .destructive) { editor.delete([key], branch: false) }
                     Button("Delete with Everything Under It", role: .destructive) { editor.delete([key], branch: true) }
@@ -220,6 +232,14 @@ struct VerbPalette: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Verbs").font(.headline)
+                Spacer()
+                Button { editor.showsPalette = false } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Hide the verbs")
+                    .accessibilityLabel("Hide the Verbs")
+            }
             TextField("Find a verb", text: $search).textFieldStyle(.roundedBorder)
             Text("Drag onto a tile, a wire or the background, or click to add under the selected tile.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -243,7 +263,9 @@ struct VerbPalette: View {
             }
         }
         .padding(10)
-        .frame(width: 300, height: 420)
+        .frame(width: 280)
+        .frame(maxHeight: .infinity)
+        .background(Color(white: 0.085))
     }
 
     private var shown: [VerbEntry] {
@@ -254,21 +276,23 @@ struct VerbPalette: View {
 
     private func row(_ verb: VerbEntry) -> some View {
         let name = verb.inflection == verb.verb ? verb.verb : "\(verb.verb).\(verb.inflection)"
-        return Button { add(verb) } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(name).font(.callout.monospaced())
-                if let description = verb.description {
-                    Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
+        // Not a Button: a button tracks the mouse itself, so a drag from it never starts.
+        return VStack(alignment: .leading, spacing: 1) {
+            Text(name).font(.callout.monospaced())
+            if let description = verb.description {
+                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { add(verb) }
+        .onDrag { NSItemProvider(object: VerbDrag.payload(for: verb) as NSString) }
         .help([name, verb.description].compactMap { $0 }.joined(separator: ": "))
+        .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
+        .accessibilityAddTraits(.isButton)
         .accessibilityHint("Adds it under the selected tile; or drag it onto the canvas")
-        .draggable(VerbDrag.payload(for: verb))
+        .accessibilityAction { add(verb) }
     }
 
     private func add(_ verb: VerbEntry) {
@@ -300,6 +324,10 @@ struct NewModuleForm: View {
             Text("New \(verb.inflection == verb.verb ? verb.verb : "\(verb.verb).\(verb.inflection)")").font(.headline)
             if let description = verb.description {
                 Text(description).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let problem = pending.problem {
+                Label(problem, systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
                 ForEach(verb.parameters.sorted { $0.required && !$1.required }, id: \.name) { parameter in
@@ -427,44 +455,5 @@ struct CanvasNotice: View {
         .background(Color(white: 0.09).opacity(0.94), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.14)))
         .environment(\.colorScheme, .dark)
-    }
-}
-
-/// Verbs dragged onto the canvas: onto a tile, a wire or the background, with what they'd land on lit as they move.
-struct CanvasDropDelegate: DropDelegate {
-    let stage: PipelineStage
-    /// Nil until the canvas can edit, when nothing is taken.
-    let editor: PipelineEditor?
-    let verbs: () -> [VerbEntry]
-
-    func validateDrop(info: DropInfo) -> Bool {
-        (editor?.canEdit ?? false) && info.hasItemsConforming(to: [.plainText, .utf8PlainText])
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        stage.dropTarget = stage.hit(at: info.location)
-        return DropProposal(operation: .copy)
-    }
-
-    func dropExited(info: DropInfo) {
-        stage.dropTarget = nil
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        let target = stage.hit(at: info.location)
-        stage.dropTarget = nil
-        guard let editor, let provider = info.itemProviders(for: [.plainText, .utf8PlainText]).first else { return false }
-        _ = provider.loadTransferable(type: String.self) { result in
-            guard case .success(let payload) = result else { return }
-            Task { @MainActor in
-                guard let verb = VerbDrag.verb(in: payload, from: verbs()) else { return }
-                switch target {
-                case .tile(let key): editor.request(verb, at: .under(key))
-                case .wire(let key): editor.request(verb, at: .onWire(key))
-                case nil: editor.request(verb, at: .atEnd)
-                }
-            }
-        }
-        return true
     }
 }

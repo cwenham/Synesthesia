@@ -103,9 +103,9 @@ public actor DaemonConnection: HostLink {
 
     /// Sends a request with a JSON body and returns its answer's body.
     public func request<Body: Decodable & Sendable, Sent: Encodable & Sendable>(
-        _ method: String, _ path: String, json: Sent?, as type: Body.Type
+        _ method: String, _ path: String, json: Sent?, text: String? = nil, as type: Body.Type
     ) async throws -> Body? {
-        let frame = try await send(method, path, json: json)
+        let frame = try await send(method, path, json: json, text: text)
         let answer: AnswerFrame<Body>
         do {
             answer = try MeepJSON.decoder.decode(AnswerFrame<Body>.self, from: frame)
@@ -126,11 +126,11 @@ public actor DaemonConnection: HostLink {
         .refused(status: frame.status, message: frame.body?.error ?? "The daemon refused with status \(frame.status).", details: frame.body?.details ?? [])
     }
 
-    private func send<Sent: Encodable & Sendable>(_ method: String, _ path: String, json: Sent?) async throws -> Data {
+    private func send<Sent: Encodable & Sendable>(_ method: String, _ path: String, json: Sent?, text body: String? = nil) async throws -> Data {
         if let gone { throw gone }
         let id = nextID
         nextID += 1
-        let text = try String(decoding: JSONEncoder().encode(RequestFrame(id: id, method: method, path: path, json: json)), as: UTF8.self)
+        let text = try String(decoding: JSONEncoder().encode(RequestFrame(id: id, method: method, path: path, json: json, text: body)), as: UTF8.self)
         return try await withCheckedThrowingContinuation { continuation in
             answers[id] = continuation
             Task {
@@ -165,7 +165,7 @@ public actor DaemonConnection: HostLink {
         nextID += 1
         streams[id] = continuation
         do {
-            let frame = RequestFrame<Empty>(id: id, method: "GET", path: path, json: nil)
+            let frame = RequestFrame<Empty>(id: id, method: "GET", path: path, json: nil, text: nil)
             try await socket.send(text: String(decoding: JSONEncoder().encode(frame), as: UTF8.self))
         } catch {
             streams.removeValue(forKey: id)?.finish(throwing: HostError.disconnected(error.localizedDescription))
@@ -209,6 +209,49 @@ public actor DaemonConnection: HostLink {
 
     /// An answer whose body isn't needed.
     struct Ignored: Decodable, Sendable {}
+
+    public nonisolated func tap(_ name: String, module: String, where condition: String?, sample: Double?) -> AsyncThrowingStream<TapEvent, any Error> {
+        var query: [String] = []
+        if let condition, !condition.isEmpty { query.append("where=" + Self.escapeQuery(condition)) }
+        if let sample { query.append("sample=\(sample)") }
+        let path = "/pipelines/\(Self.escape(name))/modules/\(Self.escape(module))/tap" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
+        let frames = stream(path)
+        return AsyncThrowingStream { continuation in
+            let reading = Task {
+                do {
+                    for try await frame in frames {
+                        let header = try MeepJSON.decoder.decode(FrameHeader.self, from: frame)
+                        guard header.event == "message" else { continue }
+                        guard let event = try MeepJSON.decoder.decode(EventFrame<TapEvent>.self, from: frame).data else {
+                            throw HostError.unreadable("A tap's message had no data.")
+                        }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in reading.cancel() }
+        }
+    }
+
+    public func inject(_ name: String, module: String, _ body: InjectBody) async throws -> Injected {
+        let path = "/pipelines/\(Self.escape(name))/modules/\(Self.escape(module))/inject"
+        let answer: Injected?
+        switch body {
+        case .text(let text): answer = try await request("POST", path, json: Empty?.none, text: text, as: Injected.self)
+        case .json(let json): answer = try await request("POST", path, json: json, as: Injected.self)
+        }
+        return try required(answer, path)
+    }
+
+    /// Escapes a query's value, so its `&`, `=`, `+` and spaces stay part of it.
+    static func escapeQuery(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+?#")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
 
     public nonisolated func stats(_ name: String, every interval: Duration) -> AsyncThrowingStream<StatsEvent, any Error> {
         let frames = stream("/pipelines/\(Self.escape(name))/stats?every=\(interval.meepText)")
@@ -297,6 +340,8 @@ struct RequestFrame<Body: Encodable>: Encodable {
     var method: String
     var path: String
     var json: Body?
+    /// A text body, as for injecting text.
+    var text: String?
 }
 
 struct AnswerFrame<Body: Decodable>: Decodable {

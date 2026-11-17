@@ -15,11 +15,20 @@ public actor SimulatedHost: HostLink {
     private let epoch: ContinuousClock.Instant
     private let started: Date
     private var closed = false
+    /// What a client may do: observe only, unless made with more, as a test of injecting.
+    public let capabilities: [String]
+    /// Messages sent in, by pipeline and module label, for taps on that module to show.
+    private var injected: [String: [TappedMessage]] = [:]
+    private var injections = 0
 
-    public init(name: String = "simulated", latency: Duration = .milliseconds(20), pipelines: [PipelineSpec] = PipelineSpec.demo) {
+    public init(
+        name: String = "simulated", latency: Duration = .milliseconds(20), pipelines: [PipelineSpec] = PipelineSpec.demo,
+        capabilities: [String] = ["observe"]
+    ) {
         self.name = name
         self.latency = latency
         pipelineSpecs = pipelines
+        self.capabilities = capabilities
         epoch = clock.now
         started = Date()
     }
@@ -36,7 +45,7 @@ public actor SimulatedHost: HostLink {
 
     public func info() async throws -> DaemonInfo {
         try await answer()
-        return DaemonInfo(version: "simulated", processId: 0, socket: "simulated://\(name)", capabilities: ["observe"], pipelines: pipelineSpecs.map(\.name))
+        return DaemonInfo(version: "simulated", processId: 0, socket: "simulated://\(name)", capabilities: capabilities, pipelines: pipelineSpecs.map(\.name))
     }
 
     public func pipelines() async throws -> [PipelineSummary] {
@@ -75,6 +84,95 @@ public actor SimulatedHost: HostLink {
         try await answer()
         _ = try spec(name)
         throw HostError.refused(status: 403, message: "A simulated host only lets you observe.", details: [])
+    }
+
+    /// Made-up messages from a module, at its rate up to 20 a second, as a tap shows them, with any sent into it. It
+    /// can't work out Meeplang conditions, so it refuses one.
+    public nonisolated func tap(_ name: String, module: String, where condition: String?, sample: Double?) -> AsyncThrowingStream<TapEvent, any Error> {
+        AsyncThrowingStream { continuation in
+            let tapping = Task {
+                do {
+                    try await self.answer()
+                    if let condition, !condition.isEmpty {
+                        throw HostError.refused(status: 400, message: "A simulated host can't work out conditions such as \(condition).", details: [])
+                    }
+                    let (spec, index) = try await self.findModule(module, of: name)
+                    let share = min(max(sample ?? 1, 0.001), 1)
+                    var count = 0
+                    var shown = 0.0
+                    while !Task.isCancelled {
+                        for message in await self.takeInjected(name, label: spec.label(index)) {
+                            continuation.yield(TapEvent(dropped: 0, message: message))
+                        }
+                        let rate = await self.outputRate(of: index, in: spec)
+                        count += 1
+                        shown += share
+                        if rate > 0, shown >= 1 {
+                            shown -= 1
+                            let source = spec.modules[index].role == .source || spec.modules[index].role == .inlet
+                            continuation.yield(TapEvent(dropped: 0, message: TappedMessage(
+                                type: source ? "Tick" : "Message", id: UUID().uuidString.lowercased(), created: Date(),
+                                emittedBy: source ? spec.label(index) : spec.modules[index].from.first.map { spec.label($0) },
+                                content: ["Count": .number(Double(count))]
+                            )))
+                        }
+                        let every = rate > 0 ? 1 / min(rate, 20) : 0.25
+                        try await Task.sleep(for: .milliseconds(Int(every * 1000)))
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in tapping.cancel() }
+        }
+    }
+
+    /// Takes a message into a module, for taps on it to show, if this host lets clients inject.
+    public func inject(_ name: String, module: String, _ body: InjectBody) async throws -> Injected {
+        try await answer()
+        let (spec, index) = try findModule(module, of: name)
+        guard capabilities.contains("inject") else {
+            throw HostError.refused(status: 403, message: "That needs the inject capability, and you have observe.", details: [])
+        }
+        injections += 1
+        let id = UUID().uuidString.lowercased()
+        let content: JSONValue
+        let type: String
+        switch body {
+        case .text(let text):
+            type = "TextMessage"
+            content = ["Text": .string(text)]
+        case .json(let json):
+            type = "JsonMessage"
+            content = json
+        }
+        let label = spec.label(index)
+        injected["\(name)/\(label)", default: []].append(TappedMessage(type: type, id: id, created: Date(), emittedBy: "Injector", content: content))
+        return Injected(id: id, type: type, module: label)
+    }
+
+    private func takeInjected(_ name: String, label: String) -> [TappedMessage] {
+        injected.removeValue(forKey: "\(name)/\(label)") ?? []
+    }
+
+    /// A module by its number, its name or its label, as the daemon finds them.
+    private func findModule(_ id: String, of name: String) throws -> (PipelineSpec, Int) {
+        let spec = try spec(name)
+        let index = Int(id).map { $0 - 1 }
+            ?? spec.modules.indices.first { spec.modules[$0].name == id || spec.label($0) == id }
+        guard let index, spec.modules.indices.contains(index) else {
+            throw HostError.refused(status: 404, message: "\(name) has no module called \(id).", details: [])
+        }
+        return (spec, index)
+    }
+
+    /// Messages a second a module emits or passes on now.
+    private func outputRate(of index: Int, in spec: PipelineSpec) -> Double {
+        let now = elapsed
+        guard now > 1 else { return spec.modules[index].rate }
+        let after = spec.counts(at: now)[index].counts
+        let before = spec.counts(at: now - 1)[index].counts
+        return Double(after.emitted + after.passed - before.emitted - before.passed)
     }
 
     public nonisolated func stats(_ name: String, every interval: Duration) -> AsyncThrowingStream<StatsEvent, any Error> {
@@ -198,7 +296,7 @@ public struct PipelineSpec: Sendable {
         return PipelineGraph(name: name, path: path, version: version, modules: graphModules, links: links)
     }
 
-    private func label(_ index: Int) -> String {
+    func label(_ index: Int) -> String {
         modules[index].name ?? "\(modules[index].verb) #\(index + 1)"
     }
 

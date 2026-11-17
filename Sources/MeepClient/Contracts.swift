@@ -409,3 +409,83 @@ public struct Problem: Codable, Sendable, Equatable {
     public var error: String
     public var details: [String]?
 }
+
+/// A message a debug tap saw, as the daemon writes it for people to look at: who it is, and its content as JSON.
+/// It's for showing; it can't be read back as the message itself.
+public struct TappedMessage: Codable, Sendable, Equatable, Identifiable {
+    /// Its type's name, such as Tick or ErrorMessage.
+    public var type: String
+    public var id: String
+    public var created: Date
+    /// The module that made it, as the daemon names modules: its name, or its verb and number.
+    public var emittedBy: String?
+    public var expires: String?
+    public var leases: [String]?
+    /// Its public properties, with long text cut short and nesting stopped after a few levels.
+    public var content: JSONValue?
+    /// Its nearest ancestors, nearest first, as `fam` searches them.
+    public var fam: [Ancestor]?
+
+    public struct Ancestor: Codable, Sendable, Equatable {
+        public var type: String
+        public var id: String
+        public var created: Date
+        public var emittedBy: String?
+
+        public init(type: String, id: String, created: Date, emittedBy: String? = nil) {
+            self.type = type
+            self.id = id
+            self.created = created
+            self.emittedBy = emittedBy
+        }
+    }
+
+    public init(
+        type: String, id: String, created: Date, emittedBy: String? = nil, expires: String? = nil, leases: [String]? = nil,
+        content: JSONValue? = nil, fam: [Ancestor]? = nil
+    ) {
+        self.type = type
+        self.id = id
+        self.created = created
+        self.emittedBy = emittedBy
+        self.expires = expires
+        self.leases = leases
+        self.content = content
+        self.fam = fam
+    }
+
+    /// Whether it's an error, which travels @errors wires.
+    public var isError: Bool { type == "ErrorMessage" || type.hasSuffix("Error") }
+}
+
+/// One message from a debug tap, with how many the tap has had to leave out so far because its reader fell behind.
+public struct TapEvent: Codable, Sendable, Equatable {
+    public var dropped: Int64
+    public var message: TappedMessage
+
+    public init(dropped: Int64, message: TappedMessage) {
+        self.dropped = dropped
+        self.message = message
+    }
+}
+
+/// What to send into a module: text, or JSON, which the daemon makes a `JsonMessage` of.
+public enum InjectBody: Sendable, Equatable {
+    case text(String)
+    case json(JSONValue)
+}
+
+/// A message the daemon sent into a pipeline.
+public struct Injected: Codable, Sendable, Equatable {
+    public var id: String
+    /// TextMessage or JsonMessage.
+    public var type: String
+    /// The module it went to, as the daemon names it.
+    public var module: String
+
+    public init(id: String, type: String, module: String) {
+        self.id = id
+        self.type = type
+        self.module = module
+    }
+}

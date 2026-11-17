@@ -42,6 +42,8 @@ public final class PipelineEditor: StageEditing {
         public let id = UUID()
         public let verb: VerbEntry
         public let placement: Placement
+        /// Why it couldn't be written without values, in Meep's words, when it was tried without them.
+        public var problem: String?
     }
 
     @ObservationIgnored private var notices = 0
@@ -81,8 +83,12 @@ public final class PipelineEditor: StageEditing {
         }
     }
 
-    public func move(_ key: String, under target: String) {
+    public func move(_ key: String, under target: String?) {
         let name = stage.module(key)?.label ?? key
+        guard let target else {
+            say("Tiles are placed by the layout. Drop \(name) on another tile to move it, and everything under it, under that one.", problem: false)
+            return
+        }
         let onto = stage.module(target)?.label ?? target
         perform("Move \(name)") { document in
             guard let graph = document.answer?.graph else { throw DocumentError("The text's graph isn't here yet.") }
@@ -123,25 +129,32 @@ public final class PipelineEditor: StageEditing {
         if verb.parameters.contains(where: \.required) {
             pendingModule = PendingModule(verb: verb, placement: placement)
         } else {
-            write(NewModule.line(for: verb, values: [:], name: nil), at: placement, verb: verb)
+            // Tried as it is; if it needs values after all (Batch needs a size or a time, neither required alone), the
+            // form asks for them, with Meep's reason.
+            write(NewModule.line(for: verb, values: [:], name: nil), at: placement, verb: verb, askIfRefused: true)
         }
     }
 
     /// Writes a module's line where it goes, then selects it.
-    public func write(_ line: String, at placement: Placement, verb: VerbEntry) {
+    public func write(_ line: String, at placement: Placement, verb: VerbEntry, askIfRefused: Bool = false) {
         pendingModule = nil
         let action = "Add \(verb.verb)"
         perform(action) { document in
             let added: [String]
-            switch placement {
-            case .under(let key):
-                added = try await document.apply([.add(line, under: key)], named: action)
-            case .onWire(let link):
-                added = try await self.insert(line, onWire: link, in: document, named: action)
-            case .atEnd:
-                let text = document.text
-                document.change(to: text + (text.isEmpty || text.hasSuffix("\n") ? "" : "\n") + line + "\n", named: action)
-                added = []
+            do {
+                switch placement {
+                case .under(let key):
+                    added = try await document.apply([.add(line, under: key)], named: action)
+                case .onWire(let link):
+                    added = try await self.insert(line, onWire: link, in: document, named: action)
+                case .atEnd:
+                    let text = document.text
+                    document.change(to: text + (text.isEmpty || text.hasSuffix("\n") ? "" : "\n") + line + "\n", named: action)
+                    added = []
+                }
+            } catch let error as DocumentError where askIfRefused {
+                self.pendingModule = PendingModule(verb: verb, placement: placement, problem: error.message)
+                return
             }
             await self.select(added, orLineOf: placement == .atEnd ? document.lines.lineCount - 2 : nil, in: document)
         }
@@ -170,6 +183,73 @@ public final class PipelineEditor: StageEditing {
         document.change(to: text, named: action)
         return []
     }
+
+    // MARK: Drops
+
+    /// Every verb the pipeline can use, once asked for: for the palette, and for verbs dropped on the canvas.
+    public private(set) var verbs: [VerbEntry] = []
+    /// Whether the palette of verbs shows beside the canvas.
+    public var showsPalette = false
+
+    /// Asks for the verbs, from the pipeline's text (which knows its plugins), or the core modules' without it.
+    @discardableResult
+    public func loadVerbs() async -> [VerbEntry] {
+        if !verbs.isEmpty { return verbs }
+        await workspace.openText(for: pipeline, host: host)
+        if let document = workspace.document(for: pipeline) {
+            verbs = await document.loadVerbs()
+        }
+        if verbs.isEmpty { verbs = (try? await workspace.language?.verbs()) ?? [] }
+        return verbs
+    }
+
+    /// A verb from the palette or a message from a probe, dropped on the canvas. A verb on a tile goes under it, on a
+    /// wire between its ends, on the background at the end; a message on a tile, or a wire's target, opens the composer
+    /// to send it there.
+    public func drop(_ payload: String, on hit: StageHit?) -> Bool {
+        if let body = MessageDrag.body(in: payload) {
+            let key: String?
+            switch hit {
+            case .tile(let tile)?: key = tile
+            case .wire(let wire)?: key = stage.link(wire)?.to
+            case nil: key = nil
+            }
+            guard let key else {
+                say("Drop the message on a tile, or a wire, to send it there.", problem: false)
+                return false
+            }
+            workspace.compose(into: key, of: pipeline, body: body, isJSON: true)
+            return true
+        }
+        guard VerbDrag.isVerb(payload), canEdit else { return false }
+        Task { @MainActor in
+            guard let verb = VerbDrag.verb(in: payload, from: await loadVerbs()) else {
+                say("meep lsp doesn't know that verb.", problem: true)
+                return
+            }
+            switch hit {
+            case .tile(let key)?: request(verb, at: .under(key))
+            case .wire(let key)?: request(verb, at: .onWire(key))
+            case nil: request(verb, at: .atEnd)
+            }
+        }
+        return true
+    }
+
+    // MARK: Probes and messages
+
+    public func probe(_ target: Probe.Target) {
+        guard let host else { return }
+        workspace.openProbe(on: target, in: pipeline, host: host)
+        showsProbes = true
+    }
+
+    public func compose(into key: String) {
+        workspace.compose(into: key, of: pipeline)
+    }
+
+    /// Whether the dock under the canvas shows the probes rather than the modules' counts.
+    public var showsProbes = false
 
     // MARK: Undo
 

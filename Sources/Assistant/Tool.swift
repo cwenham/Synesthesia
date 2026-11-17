@@ -1,4 +1,5 @@
 import Foundation
+import MeepClient
 
 /// A tool Claude can use, written once and offered both over MCP and, later, in the app's own Claude sidebar
 /// (design, section 8).

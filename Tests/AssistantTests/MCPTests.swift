@@ -7,6 +7,7 @@ import Simulation
 import Stage
 import Testing
 import Transport
+import MeepClient
 @testable import Assistant
 
 /// A client's end of an MCP connection: sends requests, reads answers by id.
@@ -82,6 +83,16 @@ final class TestViewer: Viewer {
     /// What the person decides, in the tests.
     var decision: ProposalResult = .rejected
     private(set) var proposed: [(edits: [MeepEdit], summary: String)] = []
+    /// What the person does with an offered message, in the tests.
+    var injection: InjectionResult = .notSent
+    private(set) var offered: [(body: InjectBody, key: String)] = []
+
+    func inject(_ body: InjectBody, into key: String, of pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async -> InjectionResult {
+        offered.append((body, key))
+        return injection
+    }
+
+    func probes(for pipeline: MeepPipeline) -> [Probe] { [] }
 
     func propose(_ edits: [MeepEdit], summary: String, to pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async throws -> ProposalResult {
         proposed.append((edits, summary))
@@ -138,7 +149,7 @@ struct MCPSessionTests {
 
         let tools = try await client.request("tools/list")
         let names = tools["result"]?["tools"]?.array?.compactMap { $0["name"]?.string }
-        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "describe_verbs", "watch_counts", "describe_view", "capture_view", "show", "propose_edits"])
+        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "describe_verbs", "watch_counts", "describe_view", "capture_view", "show", "propose_edits", "sample_tap", "inject_message"])
         for tool in tools["result"]?["tools"]?.array ?? [] {
             #expect(tool["inputSchema"]?["type"] == "object")
             #expect(tool["description"]?.string?.isEmpty == false)
@@ -318,6 +329,37 @@ struct ToolTests {
         #expect(undecided?["outcome"]?.string == "undecided")
         let (_, missing) = try await call(registry, "propose_edits", ["address": "orders", "edits": [["module": "m3", "kind": "remove"]]])
         #expect(missing.isError)
+    }
+
+    @Test func aTapIsSampledForAFewSeconds() async throws {
+        let viewer = try await TestViewer()
+        defer { viewer.stop() }
+        let registry = ContinuumTools.registry(for: viewer)
+        let (value, result) = try await call(registry, "sample_tap", ["address": "ticker/m1", "seconds": 1, "limit": 3])
+        #expect(!result.isError)
+        #expect(value?["messages"]?.array?.count == 3)
+        #expect(value?["messages"]?.array?.first?["content"]?["Count"] != nil)
+        let (_, refused) = try await call(registry, "sample_tap", ["address": "ticker/m1", "where": "msg.Count > 2", "seconds": 1])
+        #expect(refused.isError)
+        let (_, noModule) = try await call(registry, "sample_tap", ["address": "ticker"])
+        #expect(noModule.isError)
+    }
+
+    @Test func aMessageIsOfferedForThePersonToSend() async throws {
+        let viewer = try await TestViewer()
+        defer { viewer.stop() }
+        let registry = ContinuumTools.registry(for: viewer)
+        viewer.injection = .sent(Injected(id: "x1", type: "JsonMessage", module: "Parse"))
+        let (value, result) = try await call(registry, "inject_message", ["address": "orders/m2", "json": ["Count": 6]])
+        #expect(!result.isError)
+        #expect(value?["outcome"]?.string == "sent")
+        #expect(viewer.offered.first?.body == .json(["Count": 6]))
+        #expect(viewer.offered.first?.key == "m2")
+        viewer.injection = .notSent
+        let (declined, _) = try await call(registry, "inject_message", ["address": "orders/m2", "text": "hello"])
+        #expect(declined?["outcome"]?.string == "notSent")
+        let (_, nothing) = try await call(registry, "inject_message", ["address": "orders/m2"])
+        #expect(nothing.isError)
     }
 
     @Test func verbsNeedALanguageServer() async throws {

@@ -52,6 +52,36 @@ struct LiveDaemonTests {
         await daemon.close()
     }
 
+    @Test func aTapShowsMessagesThatMeetItsCondition() async throws {
+        let daemon = try await DaemonConnection.connect(socketPath: socket)
+        let graph = try await daemon.graph(pipeline)
+        let source = try #require(graph.modules.first { $0.verbRole == .source })
+        var counts: [Double] = []
+        for try await event in daemon.tap(pipeline, module: "\(source.number)", where: "msg.Count % 2 == 0", sample: nil) {
+            counts.append(event.message.content?["Count"]?.number ?? -1)
+            if counts.count == 3 { break }
+        }
+        #expect(counts.count == 3)
+        #expect(counts.allSatisfy { $0.truncatingRemainder(dividingBy: 2) == 0 })
+        await #expect(throws: HostError.self) {
+            for try await _ in daemon.tap(pipeline, module: "\(source.number)", where: "msg.Count >", sample: nil) {}
+        }
+        await daemon.close()
+    }
+
+    @Test func injectingSaysWhatWasSent() async throws {
+        let daemon = try await DaemonConnection.connect(socketPath: socket)
+        guard try await daemon.info().capabilities.contains("inject") else { return }
+        let graph = try await daemon.graph(pipeline)
+        let last = try #require(graph.modules.last)
+        let text = try await daemon.inject(pipeline, module: "\(last.number)", .text("from Synesthesia's tests"))
+        #expect(text.type == "TextMessage")
+        #expect(text.module == last.module)
+        let json = try await daemon.inject(pipeline, module: "\(last.number)", .json(["Count": 6, "Note": "test"]))
+        #expect(json.type == "JsonMessage")
+        await daemon.close()
+    }
+
     @Test func nothingListeningIsSaidPlainly() async {
         await #expect(throws: (any Error).self) {
             _ = try await DaemonConnection.connect(socketPath: "/tmp/no-such-meep.sock")

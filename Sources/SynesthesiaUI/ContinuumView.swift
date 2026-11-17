@@ -148,6 +148,7 @@ struct PipelineDetailView: View {
     @State private var stage: PipelineStage
     /// Turns the canvas's gestures into edits of the text, once the workspace is known.
     @State private var editor: PipelineEditor?
+    @State private var previousProbes: Int?
     @Environment(\.workspace) private var workspace
     @AppStorage("textPaneWidth") private var textWidth = PipelineDetailView.usualTextWidth
 
@@ -199,8 +200,8 @@ struct PipelineDetailView: View {
             VSplitView {
                 canvasAndText
                     .frame(minHeight: 240, idealHeight: 480, maxHeight: .infinity)
-                ModuleTable(modules: pipeline.modules, current: host?.isReachable ?? false)
-                    .frame(minHeight: 90, idealHeight: 170, maxHeight: .infinity)
+                dock
+                    .frame(minHeight: 90, idealHeight: 200, maxHeight: .infinity)
             }
             #else
             canvasAndText
@@ -210,16 +211,59 @@ struct PipelineDetailView: View {
             if let request { workspace?.showText(of: pipeline, at: request.key) }
         }
         .onAppear {
-            guard editor == nil, let workspace else { return }
-            let made = PipelineEditor(pipeline: pipeline, host: host, stage: stage, workspace: workspace)
-            editor = made
-            stage.editing = made
+            guard let workspace else { return }
+            if editor == nil {
+                let made = PipelineEditor(pipeline: pipeline, host: host, stage: stage, workspace: workspace)
+                editor = made
+                stage.editing = made
+            }
+            if let host { workspace.openSavedProbes(for: pipeline, host: host) }
+            workspace.setProbesRunning(true, for: pipeline)
+            stage.probes = workspace.probes(for: pipeline)
         }
+        .onDisappear { workspace?.setProbesRunning(false, for: pipeline) }
+        .onChange(of: workspace?.probes(for: pipeline).map(\.id) ?? []) { _, _ in
+            stage.probes = workspace?.probes(for: pipeline) ?? []
+            if !stage.probes.isEmpty, stage.probes.count > (previousProbes ?? 0) { editor?.showsProbes = true }
+            previousProbes = stage.probes.count
+        }
+        .onChange(of: stage.openedMessage) { _, opened in if opened != nil { editor?.showsProbes = true } }
         .environment(\.pipelineEditor, editor)
         .sheet(item: Binding(get: { editor?.pendingModule }, set: { editor?.pendingModule = $0 })) { pending in
             if let editor { NewModuleForm(pending: pending, editor: editor) }
         }
     }
+
+    /// Under the canvas: the modules' counts, or the probes' messages.
+    private var dock: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Picker("Show", selection: Binding(get: { editor?.showsProbes ?? false }, set: { editor?.showsProbes = $0 })) {
+                    Text("Modules").tag(false)
+                    Text(probeCount == 0 ? "Probes" : "Probes (\(probeCount))").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            if editor?.showsProbes == true {
+                ProbeDock(probes: workspace?.probes(for: pipeline) ?? [], stage: stage)
+            } else {
+                ModuleTable(modules: pipeline.modules, current: host?.isReachable ?? false)
+            }
+        }
+        .sheet(item: Binding(
+            get: { workspace?.injection.flatMap { $0.pipeline == pipeline.id ? $0 : nil } },
+            set: { if $0 == nil, let request = workspace?.injection { workspace?.finishInjection(request, .notSent) } }
+        )) { request in
+            InjectComposer(request: request, pipeline: pipeline, host: host, stage: stage)
+        }
+    }
+
+    private var probeCount: Int { workspace?.probes(for: pipeline).count ?? 0 }
 
     /// The canvas, with the text beside it when it's showing: levels 1 and 2 open beside level 3 rather than
     /// replacing it (design, section 2).
