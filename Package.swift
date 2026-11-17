@@ -69,6 +69,6 @@ let package = Package(
         .testTarget(name: "StageTests", dependencies: ["Stage", "ContinuumKit", "Simulation", "MeepClient"]),
         .testTarget(name: "MetalStageTests", dependencies: ["MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
         .testTarget(name: "AssistantTests", dependencies: ["Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient", "CodeEditing", "LanguageClient"]),
-        .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
+        .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient", "LanguageClient", "CodeEditing"]),
     ]
 )

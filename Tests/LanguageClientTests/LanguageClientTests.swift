@@ -39,8 +39,15 @@ actor ScriptedServer {
         self.stream = stream
     }
 
+    private var failures: [String: Data] = [:]
+
     func answer(_ method: String, with result: Any) {
         answers[method] = result
+    }
+
+    /// Answers `method` with this error, as JSON, until told otherwise.
+    func fail(_ method: String, with error: Data) {
+        failures[method] = error
     }
 
     func run() async {
@@ -53,7 +60,11 @@ actor ScriptedServer {
                 let params = (try? JSONSerialization.data(withJSONObject: object["params"] as? [String: Any] ?? [:])) ?? Data()
                 received.append(Received(method: method, json: params))
                 if let id = object["id"] {
-                    await send(["jsonrpc": "2.0", "id": id, "result": answers[method] ?? NSNull()])
+                    if let failure = failures[method], let error = try? JSONSerialization.jsonObject(with: failure) {
+                        await send(["jsonrpc": "2.0", "id": id, "error": error])
+                    } else {
+                        await send(["jsonrpc": "2.0", "id": id, "result": answers[method] ?? NSNull()])
+                    }
                 }
             }
         }
@@ -252,6 +263,88 @@ struct LiveLanguageServerTests {
 
         let verbs = try await server.verbs(uri)
         #expect(verbs.count >= 24)
+        await server.shutdown()
+    }
+}
+
+struct EditTests {
+    private func answer(_ name: String) throws -> EditAnswer {
+        try JSONDecoder().decode(EditAnswer.self, from: JSONSerialization.data(withJSONObject: Fixture.result(name)))
+    }
+
+    @Test func anEditIsTheChangeToTheText() throws {
+        let set = try answer("apply-set.json")
+        #expect(set.textDocument.version == 1)
+        #expect(set.edits == [LSPTextEdit(range: LSPRange(start: LSPPosition(line: 3, character: 18), end: LSPPosition(line: 3, character: 24)), newText: "3 != 1")])
+        #expect(set.added.isEmpty && set.graph == nil)
+    }
+
+    @Test func aPreviewHasTheGraphAndTheNewModulesKeys() throws {
+        let preview = try answer("apply-insert-preview.json")
+        #expect(preview.added.map(\.key) == ["m8"])
+        let graph = try #require(preview.graph)
+        #expect(graph.modules.first { $0.key == "m8" }?.name == "Gate")
+        #expect(graph.modules.first { $0.key == "m8" }?.modifiers.first?.name == "buffer")
+    }
+
+    @Test func refusalsSayWhichEditAndWhichVersion() async throws {
+        let (client, end) = MemoryStream.pair()
+        let script = ScriptedServer(end)
+        await script.answer("initialize", with: try Fixture.result("initialize.json"))
+        let running = Task { await script.run() }
+        defer { running.cancel() }
+        let server = try await MeepLanguageServer.start(over: client)
+        for (fixture, expected) in [("apply-failed.json", LanguageServerError.requestFailed), ("apply-stale.json", LanguageServerError.contentModified)] {
+            let failure = try JSONSerialization.jsonObject(with: Fixture.data(fixture)) as! [String: Any]
+            await script.fail("meep/applyEdits", with: try JSONSerialization.data(withJSONObject: failure["error"]!))
+            do {
+                _ = try await server.applyEdits("file:///x.meep", version: 1, edits: [.remove("m3")])
+                Issue.record("\(fixture) was taken")
+            } catch let LanguageServerError.refused(code, message, edit, version) {
+                #expect(code == expected)
+                #expect(!message.isEmpty)
+                if fixture == "apply-failed.json" { #expect(edit == 1) } else { #expect(version == 1) }
+            }
+        }
+        let sent = try #require(await script.received.last?.params)
+        #expect((sent["edits"] as? [[String: Any]])?.first?["kind"] as? String == "remove")
+        #expect(sent["preview"] == nil)
+    }
+}
+
+extension LiveLanguageServerTests {
+    @Test func editsComeBackAsTextAndTheNewModuleHasItsKey() async throws {
+        let process = try LanguageServerProcess(executable: ProcessInfo.processInfo.environment["MEEP_EXECUTABLE"]!)
+        defer { process.terminate() }
+        let server = try await MeepLanguageServer.start(over: process.stream)
+        #expect(await server.capabilities.applyEdits)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("synesthesia-edits-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let path = folder.appendingPathComponent("shapes.meep").path
+        let text = try Fixture.text("shapes.meep")
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+        let uri = MeepLanguageServer.uri(forPath: path)
+        try await server.open(uri, text: text, version: 1)
+        _ = try await server.graph(uri, subscribe: false)
+
+        let answer = try await server.applyEdits(uri, version: 1, edits: [.add("WriteLine \"also\" as Also", under: "m5"), .setModifier("+0", "buffer", to: "3")], preview: true)
+        let key = try #require(answer.added.first?.key)
+        // Applying the changes as an editor would gives the graph the preview promised.
+        let changed = NSMutableString(string: text)
+        let lines = text.components(separatedBy: "\n")
+        func offset(_ position: LSPPosition) -> Int {
+            lines.prefix(position.line).reduce(0) { $0 + ($1 as NSString).length + 1 } + position.character
+        }
+        for edit in answer.edits.sorted(by: { $0.range.start > $1.range.start }) {
+            let start = offset(edit.range.start)
+            changed.replaceCharacters(in: NSRange(location: start, length: offset(edit.range.end) - start), with: edit.newText)
+        }
+        try await server.change(uri, text: changed as String, version: 2)
+        let after = try #require(try await server.graph(uri)?.graph)
+        #expect(after == answer.graph)
+        #expect(after.modules.first { $0.key == key }?.name == "Also")
+
+        await #expect(throws: LanguageServerError.self) { _ = try await server.applyEdits(uri, version: 1, edits: [.remove(key)]) }
         await server.shutdown()
     }
 }

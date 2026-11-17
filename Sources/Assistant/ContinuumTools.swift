@@ -30,6 +30,20 @@ public protocol Viewer: AnyObject {
     var showsText: Bool { get }
     /// The language server, for the verb catalogue.
     var language: LanguageService? { get }
+    /// Shows edits to a pipeline's text as a proposal (ghost tiles and a diff) and waits for the person to accept or
+    /// reject them, for at most `timeout`. Throws why if they can't be proposed, such as an edit that can't be made.
+    func propose(_ edits: [MeepEdit], summary: String, to pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async throws -> ProposalResult
+}
+
+/// What became of edits proposed to the person.
+public enum ProposalResult: Equatable, Sendable {
+    /// Accepted and made in the text, with the keys of the modules they added. The text isn't saved yet.
+    case accepted(added: [String])
+    case rejected
+    /// Replaced by another proposal, or the text closed, before the person decided.
+    case withdrawn
+    /// No decision in time; the proposal is still showing.
+    case undecided
 }
 
 /// The tools for looking at the Continuum and showing things in it (design, section 8): step 3's set.
@@ -45,7 +59,8 @@ public enum ContinuumTools {
         measures them over a few seconds; read_pipeline_text gives its Meeplang, as the person is editing it if \
         they are; describe_verbs says what each verb does and takes. describe_view says what the canvas and the \
         text beside it show, which is cheaper and more exact than capture_view's image. show points the app at an \
-        address so the person can see what you mean.
+        address so the person can see what you mean. propose_edits shows changes to a pipeline's text for the \
+        person to accept or reject; nothing changes unless they accept.
         """
 
     public static func registry(for viewer: Viewer) -> ToolRegistry {
@@ -58,6 +73,7 @@ public enum ContinuumTools {
             describeView(viewer),
             captureView(viewer),
             show(viewer),
+            proposeEdits(viewer),
         ])
     }
 
@@ -332,6 +348,62 @@ public enum ContinuumTools {
             }
             viewer.stage?.show(module.key)
             return .json(["shown": .string(pipeline.address.module(module.key).description), "label": .string(module.label)])
+        }
+    }
+
+    // MARK: Changing
+
+    static func proposeEdits(_ viewer: Viewer) -> Tool {
+        let edit: JSONValue = [
+            "type": "object",
+            "properties": [
+                "module": ["type": "string", "description": "The module: its key (m3), its name, its number, or +N for the module edit N of this list added (counting from 0). Leave it out for edits to the defaults, constants and plugins."],
+                "kind": ["type": "string", "enum": ["set", "unset", "set-modifier", "remove-modifier", "rename", "add", "insert", "remove", "remove-branch", "set-default", "unset-default", "set-const", "unset-const", "add-plugin", "remove-plugin"]],
+                "name": ["type": "string", "description": "The parameter, modifier, setting, constant or plugin. Leave it out of set and unset for the value written after the verb."],
+                "value": ["type": "string", "description": "The value as Meeplang text (5s, \"text\", msg.Count > 2), the new name for rename, or the new module's line for add and insert, such as Where msg.Count > 2 as Gate."],
+            ],
+            "required": ["kind"],
+        ]
+        return Tool(
+            name: "propose_edits", title: "Propose edits to a pipeline",
+            description: "Proposes changes to a pipeline's Meeplang as Meep2's own edits, which keep comments and layout. The app shows them to the person as ghost tiles on the canvas and a diff beside the text, and nothing changes unless they accept. Waits for their decision, up to the timeout, and says whether they accepted (with the keys of any modules added), rejected it, or haven't decided. add puts a module under another as a new branch; insert puts one between a module and those under it; remove takes one out, moving those under it up; remove-branch takes everything under it too. Name modules by the keys describe_pipeline gives. An accepted proposal is in the text but not saved: the person saves it, and a daemon watching the file then runs it. Only for pipelines on this Mac.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "address": addressSchema,
+                    "summary": ["type": "string", "description": "What the edits are for, in a short sentence the person reads before deciding."],
+                    "edits": ["type": "array", "items": edit, "minItems": 1],
+                    "timeoutSeconds": ["type": "number", "minimum": 10, "maximum": 1800, "default": 300, "description": "How long to wait for the person to decide."],
+                ],
+                "required": ["address", "summary", "edits"],
+            ],
+            readOnly: false
+        ) { arguments in
+            let (host, pipeline, _) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
+            guard let summary = arguments["summary"]?.string?.trimmingCharacters(in: .whitespaces), !summary.isEmpty else {
+                throw ToolError("Give a summary: what the edits are for, for the person to read.")
+            }
+            guard let list = arguments["edits"]?.array, !list.isEmpty else { throw ToolError("Give at least one edit.") }
+            let edits = try list.enumerated().map { index, item -> MeepEdit in
+                guard let kind = item["kind"]?.string else { throw ToolError("Edit \(index) has no kind.") }
+                return MeepEdit(module: item["module"]?.string, kind: kind, name: item["name"]?.string, value: item["value"]?.string)
+            }
+            let seconds = min(max(arguments["timeoutSeconds"]?.number ?? 300, 10), 1800)
+            let result = try await viewer.propose(edits, summary: summary, to: pipeline!, on: host, timeout: .seconds(seconds))
+            switch result {
+            case .accepted(let added):
+                return .json([
+                    "outcome": "accepted",
+                    "added": .array(added.map { .string(pipeline!.address.module($0).description) }),
+                    "note": "The edits are in the text, not saved. The person saves it; a daemon watching the file then runs it.",
+                ])
+            case .rejected:
+                return .json(["outcome": "rejected", "note": "The person rejected the proposal; nothing changed."])
+            case .withdrawn:
+                return .json(["outcome": "withdrawn", "note": "Another proposal took its place, or the text closed, before the person decided; nothing changed."])
+            case .undecided:
+                return .json(["outcome": "undecided", "note": "The person hasn't decided yet. The proposal is still showing in the app; nothing has changed."])
+            }
         }
     }
 

@@ -31,6 +31,7 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 - **1,** in Meep2 6d496dd.
 - **2,** in Meep2 ee030d7, which also counts each link's errors and each module's `passed`.
 - **3,** in Meep2 2ef2d35, with 810c2fc, which pairs unchanged modules first when matching (Q186). Synesthesia's step 4 uses it.
+- **4,** in Meep2 0278da4, with 001842b, which pairs unchanged modules wherever they now are (Q195). Synesthesia's step 5 uses it. Both are on Meep2's `main`.
 
 Prompts 1 and 2 touch the same files (`Contracts.cs`, the daemon, the runtime's stats), so run them one after the other, not side by side.
 
@@ -91,13 +92,29 @@ Refreshed 16 November 2026 for Synesthesia's step 4, against Meep2 at ee030d7.
 
 ## 4. `meep lsp`: applying edits
 
-> Synesthesia, the Swift app in `~/Projects/Synesthesia`, edits pipelines on a canvas. Each gesture becomes one of Meep2's own edits (the `EditItem` kinds that `POST /pipelines/{name}/edits` takes), so comments and layout survive. Add `meep/applyEdits` to `meep lsp`: it takes a document, the version the client has, and a list of edits; runs them through `SourceEditor` on the server's copy of the text; and returns the smallest text edits that make the change, without writing to disk. Refuse a stale version. One request should be one undo step for the client, so apply a list of edits as a unit or not at all.
+Refreshed 17 November 2026 for Synesthesia's step 5, against Meep2 at 810c2fc (branch `lsp-graph`, not yet merged into `main`).
+
+> Synesthesia, the Swift app in `~/Projects/Synesthesia` (design in `docs/Design/architecture-round-1.md` there, its latest step in `docs/Design/step-4.md`), shows a pipeline's Meeplang beside a live canvas of it. It uses `meep lsp` as reported in `docs/Design/Chat/lsp-graph.md`: `meep/graph` with `meep/graphChanged`, `meep/setBase` so the editor's module keys are the daemon's, semantic tokens and `meep/verbs`. Its next step makes the canvas edit the pipeline. Each gesture becomes Meep2's own edits, made by `SourceEditor`, so comments and layout survive. Dropping a verb onto a wire is `insert`, dropping one beside a tile is `add`, deleting is `remove` or `remove-branch`, the inspector does `set`, `unset`, `set-modifier` and `remove-modifier`, and renaming is `rename`. Synesthesia never edits Meeplang by its own rules (except for merges and moves, below), so it needs `meep lsp` to make the edits. Work on a new branch from `lsp-graph`, since this builds on its language server. Add:
 >
-> Synesthesia will write the text for merges and moves itself, so Meep2 doesn't need join or move edits for it.
+> - **`meep/applyEdits`:** it takes an open document, the version the client has, and a list of edits, the same kinds `POST /pipelines/{name}/edits` takes. It runs them through `SourceEditor` on the server's copy of the text, and returns the smallest text edits (LSP `TextEdit`s against that version) that make the change.
+>   - **What it doesn't do:** it doesn't write to disk, and it doesn't change the server's copy. The client applies the text edits as one undo step and sends `didChange` as usual, so the text's own undo stays the only history.
+>   - **Stale versions:** refuse a version that isn't the server's latest.
+>   - **All or nothing:** apply a list as a unit or not at all. If one edit fails, say which, and why, in the error.
+>   - **Modules by key:** let edits name modules by the document's keys from `meep/graph` (`m3`), as well as by name or number. Keys are what the canvas has, and they're the only names that are always unique.
+>   - **New modules' keys:** for each module an edit adds or inserts, say which key it will have, and make sure the graph after the client's `didChange` gives it that key. Then the canvas can select a new tile, and keep it selected, without guessing.
+> - **Previews:** the same request with `preview: true` also returns the graph the text would have after the edits, keyed as above, again without changing anything. Synesthesia shows edits Claude proposes as ghost tiles and a diff until the person accepts them (design, section 8), and needs the graph to draw the ghosts.
+> - **Whether the daemon watches a file:** say in `PipelineSummary` (and `PipelineDetail`) whether the daemon is watching a pipeline's file (`HostedPipeline.Watching`). Then a client that saves the file knows whether the change will run without asking for a reload. Synesthesia now waits two seconds after saving, and says the daemon isn't watching if no reload comes.
 >
-> One small thing for the daemon as well: say in `PipelineSummary` whether it's watching a pipeline's file (`HostedPipeline.Watching`), so a client that saves the file knows whether the change will run without asking for a reload. Synesthesia now waits two seconds after saving, and says the daemon isn't watching if no reload comes.
+> Synesthesia will write the text for merges and moves itself (its design's Q2), then `meep lsp` checks it like any other change, so Meep2 doesn't need join or move edits for it.
 >
-> If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
+> Test `meep/applyEdits` with each kind of edit, with:
+> - modules named by key;
+> - a template and an `#include` (where an edit to a module made by a template should be refused or go to the template; say which);
+> - a stale version;
+> - a list where a later edit fails;
+> - comments and blank lines kept.
+>
+> Test a preview's graph against the graph after applying the same edits. If design questions come up, ask them in the numbered style of the design rounds, continuing from 193. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
 
 ## 5. One subscription, digests, host identity
 

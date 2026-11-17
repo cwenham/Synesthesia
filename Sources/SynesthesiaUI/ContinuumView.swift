@@ -146,6 +146,8 @@ struct PipelineDetailView: View {
     let host: MeepHost?
     /// The stage the canvas draws, which the text beside it shares.
     @State private var stage: PipelineStage
+    /// Turns the canvas's gestures into edits of the text, once the workspace is known.
+    @State private var editor: PipelineEditor?
     @Environment(\.workspace) private var workspace
     @AppStorage("textPaneWidth") private var textWidth = PipelineDetailView.usualTextWidth
 
@@ -206,6 +208,16 @@ struct PipelineDetailView: View {
         }
         .onChange(of: stage.textRequest) { _, request in
             if let request { workspace?.showText(of: pipeline, at: request.key) }
+        }
+        .onAppear {
+            guard editor == nil, let workspace else { return }
+            let made = PipelineEditor(pipeline: pipeline, host: host, stage: stage, workspace: workspace)
+            editor = made
+            stage.editing = made
+        }
+        .environment(\.pipelineEditor, editor)
+        .sheet(item: Binding(get: { editor?.pendingModule }, set: { editor?.pendingModule = $0 })) { pending in
+            if let editor { NewModuleForm(pending: pending, editor: editor) }
         }
     }
 

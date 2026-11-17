@@ -28,6 +28,7 @@ struct TextPane: View {
     let stage: PipelineStage
     @Environment(\.workspace) private var workspace
     @Environment(\.codeTextSurface) private var surface
+    @Environment(\.pipelineEditor) private var editor
     @State private var appliedRenaming = 0
 
     var body: some View {
@@ -35,6 +36,15 @@ struct TextPane: View {
             if let workspace, let document = workspace.document(for: pipeline) {
                 TextHeader(document: document, service: workspace.language)
                 Divider()
+                if let proposal = document.proposal {
+                    ProposalBanner(proposal: proposal, document: document)
+                    Divider()
+                }
+                if let editor, !document.isReadOnly, stage.selection.count == 1, let key = stage.selection.first,
+                   let module = document.answer?.graph?.modules.first(where: { $0.key == key }) {
+                    ModuleInspector(key: key, module: module, document: document, editor: editor)
+                    Divider()
+                }
                 if let surface {
                     surface.make(document, stage, workspace)
                 } else {
@@ -57,6 +67,7 @@ struct TextPane: View {
         .onChange(of: linkState, initial: true) { _, state in follow(state) }
         .onDisappear {
             stage.show(text: nil)
+            stage.show(proposal: nil)
             workspace?.closeText(for: pipeline)
         }
         .focusedSceneValue(\.meeplangDocument, workspace?.document(for: pipeline))
@@ -67,11 +78,12 @@ struct TextPane: View {
         var answer: GraphAnswer?
         var renaming: MeeplangDocument.Renaming?
         var path: String?
+        var proposal: MeeplangDocument.Proposal?
     }
 
     private var linkState: LinkState {
         let document = workspace?.document(for: pipeline)
-        return LinkState(answer: document?.answer, renaming: document?.renaming, path: document?.path)
+        return LinkState(answer: document?.answer, renaming: document?.renaming, path: document?.path, proposal: document?.proposal)
     }
 
     /// Draws the text's graph on the canvas, moving renamed tiles first.
@@ -81,6 +93,9 @@ struct TextPane: View {
             appliedRenaming = renaming.id
             renamed = renaming.keys
         }
+        stage.show(proposal: state.proposal.flatMap { proposal in
+            proposal.graph.map { ProposalGraph(graph: $0, added: Set(proposal.added)) }
+        })
         guard let answer = state.answer, let graph = answer.graph, let path = state.path else {
             stage.show(text: nil, renamed: renamed)
             return
@@ -174,6 +189,8 @@ struct TextHeader: View {
             return StatusLine(text: "Saved and running: the daemon has loaded it.", symbol: "checkmark.circle", color: .green)
         case .notWatched:
             return StatusLine(text: "Saved, but the daemon isn't watching this file, so it runs as it was.", symbol: "pause.circle", color: .orange, offersReload: true)
+        case .notReloaded:
+            return StatusLine(text: "Saved, but the daemon hasn't loaded it yet, though it's watching the file.", symbol: "clock", color: .orange, offersReload: true)
         case .savedBroken:
             return StatusLine(text: "Saved, but it doesn't load, so the pipeline runs as it was.", symbol: "exclamationmark.triangle", color: .orange)
         case .reloadFailed(let reason):

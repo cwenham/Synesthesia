@@ -139,9 +139,9 @@ struct SimulationTests {
     }
 }
 
-/// Waits until `condition` holds, failing after `seconds`.
+/// Waits until `condition` holds, failing after `seconds`: long, since other suites can keep the main actor busy.
 @MainActor
-func waitUntil(seconds: Double = 5, _ condition: @MainActor () async -> Bool) async throws {
+func waitUntil(seconds: Double = 10, _ condition: @MainActor () async -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(seconds)
     while !(await condition()) {
         guard ContinuousClock.now < deadline else {

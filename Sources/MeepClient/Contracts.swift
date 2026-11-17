@@ -46,10 +46,12 @@ public struct PipelineSummary: Codable, Sendable, Equatable {
     public var ended: Date?
     public var reason: String?
     public var restarts: Int
+    /// Whether the daemon reloads it when its file changes. Nil from daemons older than Meep2 0278da4, which don't say.
+    public var watching: Bool?
 
     public init(
         name: String, path: String, state: PipelineState, started: Date, warnings: [String] = [],
-        ended: Date? = nil, reason: String? = nil, restarts: Int = 0
+        ended: Date? = nil, reason: String? = nil, restarts: Int = 0, watching: Bool? = nil
     ) {
         self.name = name
         self.path = path
@@ -59,6 +61,7 @@ public struct PipelineSummary: Codable, Sendable, Equatable {
         self.ended = ended
         self.reason = reason
         self.restarts = restarts
+        self.watching = watching
     }
 }
 
@@ -77,10 +80,13 @@ public struct PipelineDetail: Codable, Sendable, Equatable {
     public var ended: Date?
     public var reason: String?
     public var restarts: Int
+    /// Whether the daemon reloads it when its file changes. Nil from daemons older than Meep2 0278da4.
+    public var watching: Bool?
 
     public init(
         name: String, path: String, state: PipelineState, started: Date, modules: [ModuleDetail],
-        graphVersion: Int? = nil, links: [LinkDetail]? = nil, ended: Date? = nil, reason: String? = nil, restarts: Int = 0
+        graphVersion: Int? = nil, links: [LinkDetail]? = nil, ended: Date? = nil, reason: String? = nil, restarts: Int = 0,
+        watching: Bool? = nil
     ) {
         self.name = name
         self.path = path
@@ -92,6 +98,7 @@ public struct PipelineDetail: Codable, Sendable, Equatable {
         self.ended = ended
         self.reason = reason
         self.restarts = restarts
+        self.watching = watching
     }
 }
 

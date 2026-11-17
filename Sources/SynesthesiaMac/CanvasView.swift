@@ -30,10 +30,12 @@ struct MacCanvas: NSViewRepresentable {
     func updateNSView(_ view: CanvasMTKView, context: Context) {}
 }
 
-final class CanvasMTKView: MTKView, MTKViewDelegate {
+final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
     private let stage: PipelineStage
     private let renderer: StageRenderer
     private var dragged = false
+    /// The tile being ⌥-dragged to move it.
+    private var movingTile: String?
 
     init(stage: PipelineStage, renderer: StageRenderer) {
         self.stage = stage
@@ -97,6 +99,12 @@ final class CanvasMTKView: MTKView, MTKViewDelegate {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         dragged = false
+        // ⌥-dragging a tile moves it, and everything under it, under the tile it's dropped on.
+        if event.modifierFlags.contains(.option), case .tile(let key)? = stage.hit(at: location(of: event)), stage.editing != nil {
+            movingTile = key
+        } else {
+            movingTile = nil
+        }
         if event.clickCount == 2 {
             // The background fits the pipeline; a tile opens its text beside the canvas.
             switch stage.hit(at: location(of: event)) {
@@ -107,15 +115,33 @@ final class CanvasMTKView: MTKView, MTKViewDelegate {
         }
     }
 
-    /// Dragging moves the view, until editing on the canvas (step 5) gives tiles their own drags.
+    /// Dragging moves the view; ⌥-dragging a tile moves its branch, lighting the tile it would go under.
     override func mouseDragged(with event: NSEvent) {
         dragged = true
+        if let movingTile {
+            NSCursor.dragCopy.set()
+            if case .tile(let key)? = stage.hit(at: location(of: event)), key != movingTile {
+                stage.dropTarget = .tile(key)
+            } else {
+                stage.dropTarget = nil
+            }
+            return
+        }
         NSCursor.closedHand.set()
         stage.pan(by: CGVector(dx: event.deltaX, dy: event.deltaY))
         stage.hover(at: nil)
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let moving = movingTile {
+            movingTile = nil
+            NSCursor.arrow.set()
+            if case .tile(let target)? = stage.dropTarget {
+                stage.editing?.move(moving, under: target)
+            }
+            stage.dropTarget = nil
+            if dragged { return }
+        }
         if dragged {
             NSCursor.arrow.set()
             stage.hover(at: location(of: event))
@@ -145,6 +171,64 @@ final class CanvasMTKView: MTKView, MTKViewDelegate {
         stage.fit()
     }
 
+    // MARK: Editing
+
+    /// ⌫ deletes the selected modules; ⌥⌫ deletes them with everything under them.
+    override func keyDown(with event: NSEvent) {
+        let delete = event.keyCode == 51 || event.keyCode == 117
+        if delete, !stage.selection.isEmpty, let editing = stage.editing {
+            editing.delete(stage.selection, branch: event.modifierFlags.contains(.option))
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    /// A tile's menu: show it in the text, or delete it.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard case .tile(let key)? = stage.hit(at: location(of: event)) else { return nil }
+        if !stage.selection.contains(key) { stage.select([key], reveal: false) }
+        let keys = stage.selection
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem("Show in Text") { [stage] in stage.requestText(at: key) })
+        if let editing = stage.editing {
+            menu.addItem(.separator())
+            let label = keys.count == 1 ? "Delete" : "Delete \(keys.count) Modules"
+            menu.addItem(ClosureMenuItem(label) { editing.delete(keys, branch: false) })
+            menu.addItem(ClosureMenuItem(label + " with Everything Under It") { editing.delete(keys, branch: true) })
+            menu.addItem(.separator())
+            let hint = NSMenuItem(title: "⌥-drag a tile onto another to move it there", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+        }
+        return menu
+    }
+
+    /// ⌘Z on the canvas undoes the text's last change, whether it was typed or made here.
+    override var undoManager: UndoManager? {
+        stage.editing?.undoManager ?? super.undoManager
+    }
+
+    @objc func undo(_ sender: Any?) {
+        undoManager?.undo()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        undoManager?.redo()
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(undo(_:)):
+            item.title = undoManager?.undoMenuItemTitle ?? "Undo"
+            return undoManager?.canUndo ?? false
+        case #selector(redo(_:)):
+            item.title = undoManager?.redoMenuItemTitle ?? "Redo"
+            return undoManager?.canRedo ?? false
+        default:
+            return true
+        }
+    }
+
     // MARK: VoiceOver
 
     override func isAccessibilityElement() -> Bool { true }
@@ -156,5 +240,24 @@ final class CanvasMTKView: MTKView, MTKViewDelegate {
             let role: NSAccessibility.Role = if case .tile = item.hit { .button } else { .unknown }
             return NSAccessibilityElement.element(withRole: role, frame: onScreen, label: item.label, parent: self)
         }
+    }
+}
+
+/// A menu item that runs a closure.
+@MainActor
+final class ClosureMenuItem: NSMenuItem {
+    private let run: @MainActor () -> Void
+
+    init(_ title: String, run: @escaping @MainActor () -> Void) {
+        self.run = run
+        super.init(title: title, action: #selector(runAction), keyEquivalent: "")
+        target = self
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    @objc private func runAction() {
+        run()
     }
 }

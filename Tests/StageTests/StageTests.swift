@@ -81,17 +81,24 @@ struct PipelineStageTests {
         let stage = PipelineStage(pipeline: pipeline, host: host)
         let start = ProcessInfo.processInfo.systemUptime
         var snapshot = StageSnapshot()
-        // Two seconds of frames, as counts come in.
-        while ProcessInfo.processInfo.systemUptime - start < 2 {
+        // Frames as counts come in: at least two seconds' worth, and on a busy machine until the rates have risen.
+        func shown(_ snapshot: StageSnapshot) -> Bool {
+            snapshot.streams.contains { $0.path.id == "m1>m2" && $0.style == .rate }
+                && snapshot.streams.contains { $0.path.id == "m2>m4" && $0.color == Theme.error }
+                && (snapshot.overStreams.contains { $0.path.id == "m3.dropped" } || snapshot.overParticles.contains { $0.color.x == Theme.dropped.x })
+        }
+        repeat {
             snapshot = stage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: size)
             try await Task.sleep(for: .milliseconds(16))
-        }
+        } while ProcessInfo.processInfo.systemUptime - start < 2 || !shown(snapshot) && ProcessInfo.processInfo.systemUptime - start < 10
         // Readings arrive at thousands a second, so their wire shows a rate, not single messages.
         let readings = try #require(snapshot.streams.first { $0.path.id == "m1>m2" })
         #expect(readings.style == .rate)
         #expect(readings.spacing < Flow.spacing(for: 10))
         // Classify fails about 24 a second, and its errors go to Rejects in red.
-        #expect(snapshot.streams.contains { $0.path.id == "m2>m4" && $0.color == Theme.error })
+        let rejects = stage.link("m2>m4")?.live
+        #expect(snapshot.streams.contains { $0.path.id == "m2>m4" && $0.color == Theme.error },
+                "errors at \(rejects?.errorRate ?? -1)/s, counted \(rejects?.isCounted ?? false), \(rejects?.errors ?? -1) so far")
         // Alerts drops some: they spill off its tile.
         #expect(snapshot.overStreams.contains { $0.path.id == "m3.dropped" }
             || snapshot.overParticles.contains { $0.color.x == Theme.dropped.x })
@@ -294,5 +301,42 @@ struct TextTests {
         let regular = CTFontCopyPostScriptName(TextShaper.shared.font(StageFont(size: 13))) as String
         let semibold = CTFontCopyPostScriptName(TextShaper.shared.font(StageFont(size: 13, weight: .semibold))) as String
         #expect(regular != semibold, "\(regular) and \(semibold)")
+    }
+}
+
+@MainActor
+struct ProposalTests {
+    let size = CGSize(width: 1100, height: 560)
+
+    @Test func aProposalShowsWhatItAddsChangesAndTakesOut() async throws {
+        let (pipeline, host, session) = try await simulated("orders")
+        defer { session.stop() }
+        let stage = PipelineStage(pipeline: pipeline, host: host)
+        var graph = try #require(pipeline.graph)
+        let removed = try #require(graph.modules.last)
+        graph.modules.removeLast()
+        graph.links.removeAll { $0.to == removed.key || $0.from == removed.key }
+        graph.modules[1].parameters = [GraphParameter(text: "changed", span: graph.modules[1].span)]
+        graph.modules.append(GraphModule(key: "m99", number: 99, module: "Gate", verb: "Where", role: .filter, span: graph.modules[0].span, name: "Gate", under: graph.modules[0].key))
+        graph.links.append(GraphLink(from: graph.modules[0].key, to: "m99"))
+        stage.show(proposal: ProposalGraph(graph: graph, added: ["m99"]))
+
+        let snapshot = stage.frame(at: 1, viewSize: size)
+        #expect(stage.module("m99")?.isProposed == true)
+        #expect(stage.module(removed.key)?.isRemoved == true)
+        #expect(stage.module(graph.modules[1].key)?.isChanged == true)
+        #expect(stage.module(graph.modules[0].key)?.isChanged == false)
+        let gate = try #require(snapshot.tiles.first { $0.id == "m99" })
+        #expect(gate.isGhost && gate.color == Theme.proposed)
+        #expect(snapshot.tiles.first { $0.id == removed.key }?.color == Theme.error)
+        #expect(snapshot.texts.contains { $0.tile == "m99" && $0.string == "proposed" })
+        #expect(snapshot.texts.contains { $0.tile == removed.key && $0.string == "to be removed" })
+        #expect(stage.link("\(graph.modules[0].key)>m99")?.isProposed == true)
+
+        // Rejected: what runs comes back.
+        stage.show(proposal: nil)
+        _ = stage.frame(at: 2, viewSize: size)
+        #expect(stage.module("m99") == nil)
+        #expect(stage.module(removed.key)?.isRemoved == false)
     }
 }

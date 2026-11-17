@@ -1,0 +1,26 @@
+{
+ "jsonrpc": "2.0",
+ "id": 7,
+ "result": {
+  "textDocument": {
+   "uri": "file:///tmp/synesthesia-fixtures/shapes.meep",
+   "version": 1
+  },
+  "edits": [
+   {
+    "range": {
+     "start": {
+      "line": 5,
+      "character": 0
+     },
+     "end": {
+      "line": 8,
+      "character": 0
+     }
+    },
+    "newText": ""
+   }
+  ],
+  "added": []
+ }
+}

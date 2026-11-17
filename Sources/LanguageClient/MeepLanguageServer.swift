@@ -57,7 +57,8 @@ public actor MeepLanguageServer {
             completions: given.completionProvider != nil,
             graph: given.experimental?.meep?.graph ?? false,
             setBase: given.experimental?.meep?.setBase ?? false,
-            verbs: given.experimental?.meep?.verbs ?? false
+            verbs: given.experimental?.meep?.verbs ?? false,
+            applyEdits: given.experimental?.meep?.applyEdits ?? false
         )
         try await connection.notify("initialized", Empty())
     }
@@ -93,6 +94,20 @@ public actor MeepLanguageServer {
         try await connection.request(
             "meep/setBase", SetBaseParams(textDocument: .init(uri: uri), pipeline: pipeline, graph: graph, text: text), as: GraphAnswer.self
         )
+    }
+
+    // MARK: Edits
+
+    /// Makes Meep2's edits on the server's copy of the document at `version`, and returns the changes to the text
+    /// that make them, without changing anything: the client applies them and sends the change as usual. With
+    /// `preview`, the answer also has the graph the text will have. Throws ``LanguageServerError/refused(code:message:edit:version:)``
+    /// for a stale version (`contentModified`) or an edit that can't be made (`requestFailed`, with the edit).
+    public func applyEdits(_ uri: String, version: Int, edits: [MeepEdit], preview: Bool = false) async throws -> EditAnswer {
+        let parameters = ApplyEditsParams(textDocument: .init(uri: uri, version: version), edits: edits, preview: preview ? true : nil)
+        guard let answer = try await connection.request("meep/applyEdits", parameters, as: EditAnswer.self) else {
+            throw LanguageServerError.unreadable("The answer to meep/applyEdits was empty.")
+        }
+        return answer
     }
 
     // MARK: Colouring, hovers and completions
@@ -185,7 +200,7 @@ struct InitializeParams: Encodable, Sendable {
 
     struct ClientCapabilities: Encodable, Sendable {
         var textDocument = TextDocument()
-        var experimental = ["meep": ["graph": true, "setBase": true, "verbs": true]]
+        var experimental = ["meep": ["graph": true, "setBase": true, "verbs": true, "applyEdits": true]]
 
         struct TextDocument: Encodable, Sendable {
             var hover = ["contentFormat": ["markdown", "plaintext"]]
@@ -248,6 +263,7 @@ struct InitializeResult: Decodable, Sendable {
             var graph: Bool?
             var setBase: Bool?
             var verbs: Bool?
+            var applyEdits: Bool?
         }
     }
 }
@@ -324,6 +340,12 @@ struct DeltaOrTokens: Decodable, Sendable {
         let delta = SemanticTokensDelta(resultId: resultId, edits: edits ?? [])
         return SemanticTokens(resultId: resultId, data: delta.applied(to: previous.data))
     }
+}
+
+struct ApplyEditsParams: Encodable, Sendable {
+    var textDocument: DidChange.Versioned
+    var edits: [MeepEdit]
+    var preview: Bool?
 }
 
 struct PositionParams: Encodable, Sendable {

@@ -171,10 +171,12 @@ public struct ServerCapabilities: Sendable, Equatable {
     public var setBase: Bool
     /// `meep/verbs`.
     public var verbs: Bool
+    /// `meep/applyEdits`.
+    public var applyEdits: Bool
 
     public init(
         legend: SemanticTokensLegend? = nil, tokenDeltas: Bool = false, hovers: Bool = false, completions: Bool = false,
-        graph: Bool = false, setBase: Bool = false, verbs: Bool = false
+        graph: Bool = false, setBase: Bool = false, verbs: Bool = false, applyEdits: Bool = false
     ) {
         self.legend = legend
         self.tokenDeltas = tokenDeltas
@@ -183,6 +185,7 @@ public struct ServerCapabilities: Sendable, Equatable {
         self.graph = graph
         self.setBase = setBase
         self.verbs = verbs
+        self.applyEdits = applyEdits
     }
 }
 
@@ -261,4 +264,111 @@ public struct CompletionItem: Codable, Sendable, Equatable {
 
         enum CodingKeys: String, CodingKey { case value }
     }
+}
+
+/// One of Meep2's edits, as `meep/applyEdits` and the daemon's `POST /pipelines/{name}/edits` take them.
+public struct MeepEdit: Codable, Sendable, Equatable {
+    /// The module: its key from the graph (`m3`), its name, its number, a verb only one module has, or `+N` for the
+    /// module edit N of the same list added. Nil for edits to the defaults, constants and plugins.
+    public var module: String?
+    /// set, unset, set-modifier, remove-modifier, rename, add, insert, remove or remove-branch for a module;
+    /// set-default, unset-default, set-const, unset-const, add-plugin or remove-plugin for the rest of the file.
+    public var kind: String
+    /// The parameter, modifier, setting, constant or plugin, for those edits.
+    public var name: String?
+    /// The value as Meeplang text, the new name, or the new module's line.
+    public var value: String?
+
+    public init(module: String?, kind: String, name: String? = nil, value: String? = nil) {
+        self.module = module
+        self.kind = kind
+        self.name = name
+        self.value = value
+    }
+
+    public static func set(_ module: String, _ name: String?, to value: String) -> MeepEdit {
+        MeepEdit(module: module, kind: "set", name: name, value: value)
+    }
+
+    public static func unset(_ module: String, _ name: String?) -> MeepEdit {
+        MeepEdit(module: module, kind: "unset", name: name)
+    }
+
+    public static func setModifier(_ module: String, _ name: String, to value: String? = nil) -> MeepEdit {
+        MeepEdit(module: module, kind: "set-modifier", name: name, value: value)
+    }
+
+    public static func removeModifier(_ module: String, _ name: String) -> MeepEdit {
+        MeepEdit(module: module, kind: "remove-modifier", name: name)
+    }
+
+    /// Gives a module a name with `as`, or with nil, takes its name away.
+    public static func rename(_ module: String, to name: String?) -> MeepEdit {
+        MeepEdit(module: module, kind: "rename", value: name)
+    }
+
+    /// Adds `line` as a new branch under a module.
+    public static func add(_ line: String, under module: String) -> MeepEdit {
+        MeepEdit(module: module, kind: "add", value: line)
+    }
+
+    /// Inserts `line` between a module and the modules under it.
+    public static func insert(_ line: String, after module: String) -> MeepEdit {
+        MeepEdit(module: module, kind: "insert", value: line)
+    }
+
+    /// Removes a module; the modules under it move up to take its place.
+    public static func remove(_ module: String) -> MeepEdit {
+        MeepEdit(module: module, kind: "remove")
+    }
+
+    /// Removes a module and everything under it.
+    public static func removeBranch(_ module: String) -> MeepEdit {
+        MeepEdit(module: module, kind: "remove-branch")
+    }
+}
+
+/// A change to a document's text: replace `range` with `newText`.
+public struct LSPTextEdit: Codable, Sendable, Equatable {
+    public var range: LSPRange
+    public var newText: String
+
+    public init(range: LSPRange, newText: String) {
+        self.range = range
+        self.newText = newText
+    }
+}
+
+/// What `meep/applyEdits` answers: the changes to the text that make the edits, against the version asked about,
+/// and the keys new modules will have. With a preview, also the graph the text will have.
+public struct EditAnswer: Decodable, Sendable, Equatable {
+    public struct Document: Decodable, Sendable, Equatable {
+        public var uri: String
+        public var version: Int
+    }
+
+    public struct Added: Decodable, Sendable, Equatable {
+        /// The edit that added it, counting from 0.
+        public var edit: Int
+        public var key: String
+    }
+
+    public var textDocument: Document
+    public var edits: [LSPTextEdit]
+    public var added: [Added]
+    /// For a preview, the graph the text will have once the change is sent.
+    public var graph: PipelineGraph?
+    /// For a preview, keys that would be renamed, old to new.
+    public var renamed: [String: String]?
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        textDocument = try c.decode(Document.self, forKey: .textDocument)
+        edits = try c.decodeIfPresent([LSPTextEdit].self, forKey: .edits) ?? []
+        added = try c.decodeIfPresent([Added].self, forKey: .added) ?? []
+        graph = try c.decodeIfPresent(PipelineGraph.self, forKey: .graph)
+        renamed = try c.decodeIfPresent([String: String].self, forKey: .renamed)
+    }
+
+    enum CodingKeys: String, CodingKey { case textDocument, edits, added, graph, renamed }
 }

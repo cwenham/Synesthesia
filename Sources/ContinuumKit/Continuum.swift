@@ -117,6 +117,8 @@ public final class MeepPipeline: Identifiable {
     public internal(set) var reason: String?
     public internal(set) var restarts = 0
     public internal(set) var warnings: [String] = []
+    /// Whether the daemon reloads it when its file changes; nil when the daemon doesn't say.
+    public internal(set) var watching: Bool?
     public internal(set) var modules: [MeepModule] = []
     /// The links between its modules, from its graph, with what each has carried.
     public internal(set) var links: [MeepLink] = []
@@ -165,6 +167,7 @@ public final class MeepPipeline: Identifiable {
         reason = summary.reason
         restarts = summary.restarts
         warnings = summary.warnings
+        watching = summary.watching
     }
 
     /// Takes the pipeline's counts at `time`, in seconds on a steady clock.
@@ -176,6 +179,7 @@ public final class MeepPipeline: Identifiable {
         reason = detail.reason
         restarts = detail.restarts
         graphVersion = detail.graphVersion
+        if let watching = detail.watching { self.watching = watching }
 
         var kept: [MeepModule] = []
         for module in detail.modules {

@@ -1,0 +1,11 @@
+{
+ "jsonrpc": "2.0",
+ "id": 5,
+ "error": {
+  "code": -32801,
+  "message": "The edits are for version 0 of the text, and the server has version 1. Nothing was changed. Send your changes to the text first, then ask again with its version.",
+  "data": {
+   "version": 1
+  }
+ }
+}

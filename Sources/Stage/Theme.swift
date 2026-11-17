@@ -39,6 +39,8 @@ public enum Theme {
     public static let dimmed = StageColor(hex: 0x4A4E58)
     /// A module written in lines being mended, while the text doesn't load: white, unlike any role's colour.
     public static let editing = StageColor(hex: 0xF4F6FA)
+    /// What a proposal would add or change, waiting for the person to accept it: violet, unlike any role's colour.
+    public static let proposed = StageColor(hex: 0xB98CFF)
 
     public static let title = StageColor(hex: 0xE8EBF0)
     public static let detail = StageColor(hex: 0x8C93A3)

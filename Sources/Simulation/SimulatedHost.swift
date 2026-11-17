@@ -41,7 +41,7 @@ public actor SimulatedHost: HostLink {
 
     public func pipelines() async throws -> [PipelineSummary] {
         try await answer()
-        return pipelineSpecs.map { PipelineSummary(name: $0.name, path: $0.path, state: .running, started: started) }
+        return pipelineSpecs.map { PipelineSummary(name: $0.name, path: $0.path, state: .running, started: started, watching: $0.watching) }
     }
 
     public func pipeline(_ name: String) async throws -> PipelineDetail {
@@ -114,7 +114,8 @@ public actor SimulatedHost: HostLink {
     private func detail(of spec: PipelineSpec) -> PipelineDetail {
         PipelineDetail(
             name: spec.name, path: spec.path, state: .running, started: started,
-            modules: spec.counts(at: elapsed), graphVersion: spec.graph.version, links: spec.linkCounts(at: elapsed)
+            modules: spec.counts(at: elapsed), graphVersion: spec.graph.version, links: spec.linkCounts(at: elapsed),
+            watching: spec.watching
         )
     }
 }
@@ -128,6 +129,8 @@ public struct PipelineSpec: Sendable {
     public var text: String?
     /// Its graph's version, which counts up with each reload.
     public var version = 1
+    /// Whether the daemon says it's watching the file; nil, as a daemon from before Meep2 0278da4 says nothing.
+    public var watching: Bool?
 
     /// One module, and how it treats what reaches it.
     public struct ModuleSpec: Sendable {

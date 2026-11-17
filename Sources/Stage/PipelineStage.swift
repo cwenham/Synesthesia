@@ -67,6 +67,12 @@ public struct StageModule {
     public let isNew: Bool
     /// Written in lines being mended, while the text doesn't load.
     public let isBeingEdited: Bool
+    /// Added by a proposal waiting to be accepted.
+    public var isProposed = false
+    /// Changed by a proposal waiting to be accepted.
+    public var isChanged = false
+    /// Taken out by a proposal waiting to be accepted.
+    public var isRemoved = false
 
     public var counts: ModuleStats { live?.counts ?? .zero }
     public func rate(_ kind: CountKind) -> Double { live?.rates[kind] ?? 0 }
@@ -84,6 +90,35 @@ public struct StageLink {
     public let live: MeepLink?
     /// In the text but not running yet.
     public let isNew: Bool
+    /// Added by a proposal waiting to be accepted.
+    public var isProposed = false
+    /// Taken out by a proposal waiting to be accepted.
+    public var isRemoved = false
+}
+
+/// Edits proposed but not yet accepted, as the graph they'd make (design, section 8): shown with new modules as
+/// ghosts, and those they'd take out marked, until the person accepts or rejects them.
+public struct ProposalGraph: Equatable, Sendable {
+    public var graph: PipelineGraph
+    /// The keys of the modules the edits add.
+    public var added: Set<String>
+
+    public init(graph: PipelineGraph, added: Set<String>) {
+        self.graph = graph
+        self.added = added
+    }
+}
+
+/// What the canvas asks of whoever makes edits, such as the app's editing of the text: the platform's canvas sends
+/// it the gestures that change the pipeline.
+@MainActor
+public protocol StageEditing: AnyObject {
+    /// Takes modules out; with `branch`, everything under them too.
+    func delete(_ keys: Set<String>, branch: Bool)
+    /// Moves a module, and everything under it, under another.
+    func move(_ key: String, under target: String)
+    /// The text's undo history, for ⌘Z on the canvas.
+    var undoManager: UndoManager? { get }
 }
 
 /// Asks for the text beside the canvas, scrolled to a module.
@@ -115,6 +150,12 @@ public final class PipelineStage {
     /// The latest ask to open the text beside the canvas: zooming in past the closest zoom over a tile, or
     /// double-clicking one.
     public private(set) var textRequest: TextRequest?
+    /// Edits proposed and waiting, drawn over what's shown.
+    public private(set) var proposal: ProposalGraph?
+    /// What a drag would drop onto now, lit as if hovered.
+    @ObservationIgnored public var dropTarget: StageHit?
+    /// Whoever makes the edits the canvas's gestures ask for.
+    @ObservationIgnored public weak var editing: (any StageEditing)?
 
     /// What's shown now, rebuilt each frame from the running pipeline or the text's graph.
     @ObservationIgnored private var shownModules: [StageModule] = []
@@ -231,8 +272,14 @@ public final class PipelineStage {
         }
         for link in shownLinks {
             guard var wire = wires[link.key] else { continue }
-            wire.isHovered = hovered == .wire(link.key)
-            if !current || link.isNew { wire.color = Theme.dimmed.with(alpha: link.isNew ? 0.45 : 0.6) }
+            wire.isHovered = hovered == .wire(link.key) || dropTarget == .wire(link.key)
+            if link.isProposed {
+                wire.color = Theme.proposed.with(alpha: 0.6)
+            } else if link.isRemoved {
+                wire.color = Theme.error.with(alpha: 0.45)
+            } else if !current || link.isNew {
+                wire.color = Theme.dimmed.with(alpha: link.isNew ? 0.45 : 0.6)
+            }
             snapshot.wires.append(wire)
         }
 
@@ -287,11 +334,13 @@ public final class PipelineStage {
                 pile(module.counts.queued, at: inlet, color: tile.color.with(alpha: current ? 0.9 : 0.4), owner: "\(key).queued", into: &snapshot)
             }
 
-            let color = module.isBeingEdited ? Theme.editing : current ? tile.color : Theme.dimmed.mixed(with: tile.color, by: 0.25)
+            let color = module.isRemoved ? Theme.error : module.isProposed ? Theme.proposed : module.isBeingEdited ? Theme.editing
+                : current ? tile.color : Theme.dimmed.mixed(with: tile.color, by: 0.25)
+            let ghost = module.isNew || module.isBeingEdited || module.isProposed || module.isRemoved
             snapshot.tiles.append(StageTile(
                 id: key, shape: tile.shape, frame: face, color: color, flash: current ? flash : 0,
-                isHovered: hovered == .tile(key) || pointedFromText == key, isSelected: selection.contains(key),
-                isDimmed: !current || module.isNew, isGhost: module.isNew || module.isBeingEdited
+                isHovered: hovered == .tile(key) || pointedFromText == key || dropTarget == .tile(key), isSelected: selection.contains(key),
+                isDimmed: (!current || module.isNew) && !module.isProposed && !module.isRemoved, isGhost: ghost
             ))
             addLabel(for: module, tile: tile, face: face, current: current, into: &snapshot)
         }
@@ -479,9 +528,14 @@ public final class PipelineStage {
         guard camera.scale * Theme.detailFont.size >= 5.5 else { return }
         snapshot.texts.append(StageText(tile.detail, at: CGPoint(x: x, y: y), font: Theme.detailFont, color: Theme.detail, tile: module.key))
         y += Theme.lineHeights[2]
-        if module.isBeingEdited || module.isNew {
-            let note = module.isBeingEdited ? "being edited" : "not running yet"
-            snapshot.texts.append(StageText(note, at: CGPoint(x: x, y: y), font: Theme.rateFont, color: module.isBeingEdited ? Theme.editing : Theme.detail, tile: module.key))
+        let note: (String, StageColor)? = module.isRemoved ? ("to be removed", Theme.error)
+            : module.isProposed ? ("proposed", Theme.proposed)
+            : module.isChanged ? ("changed", Theme.proposed)
+            : module.isBeingEdited ? ("being edited", Theme.editing)
+            : module.isNew ? ("not running yet", Theme.detail)
+            : nil
+        if let (text, color) = note {
+            snapshot.texts.append(StageText(text, at: CGPoint(x: x, y: y), font: Theme.rateFont, color: color, tile: module.key))
             return
         }
         guard current else { return }
@@ -695,8 +749,59 @@ public final class PipelineStage {
                 StageLink(key: link.key, from: link.from, to: link.to, input: link.input, port: link.port, types: link.types, live: link, isNew: false)
             }
         }
+        if let proposal { overlay(proposal, liveModules: liveModules, liveLinks: liveLinks) }
         moduleIndex = Dictionary(shownModules.enumerated().map { ($1.key, $0) }, uniquingKeysWith: { a, _ in a })
         linkIndex = Dictionary(shownLinks.enumerated().map { ($1.key, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Shows a proposal's graph in place of what's shown: modules it adds as ghosts, those it changes marked, and those
+    /// it takes out kept where they are, marked to be removed.
+    private func overlay(_ proposal: ProposalGraph, liveModules: [String: MeepModule], liveLinks: [String: MeepLink]) {
+        let before = Dictionary(shownModules.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let linksBefore = Set(shownLinks.map(\.key))
+        let after = Set(proposal.graph.modules.map(\.key))
+        var modules = proposal.graph.modules.map { module in
+            let old = before[module.key]
+            var shown = StageModule(
+                key: module.key, label: module.module, verb: module.verb, name: module.name, role: module.verbRole,
+                inflections: module.inflections, graph: module, live: liveModules[module.key], isNew: old?.isNew ?? false, isBeingEdited: false
+            )
+            shown.isProposed = proposal.added.contains(module.key) || old == nil
+            if let was = old?.graph {
+                shown.isChanged = was.parameters.map(\.text) != module.parameters.map(\.text)
+                    || was.modifiers.map { "\($0.name)=\($0.value ?? "")" } != module.modifiers.map { "\($0.name)=\($0.value ?? "")" }
+                    || was.name != module.name || was.verb != module.verb
+            }
+            return shown
+        }
+        var links = proposal.graph.links.map { link in
+            var shown = StageLink(
+                key: link.key, from: link.from, to: link.to, input: link.input, port: link.linkPort, types: link.types,
+                live: liveLinks[link.key], isNew: false
+            )
+            shown.isProposed = !linksBefore.contains(link.key)
+            return shown
+        }
+        for old in shownModules where !after.contains(old.key) {
+            var removed = old
+            removed.isRemoved = true
+            modules.append(removed)
+        }
+        let kept = Set(modules.map(\.key))
+        for old in shownLinks where !links.contains(where: { $0.key == old.key }) && kept.contains(old.from) && kept.contains(old.to)
+            && (!after.contains(old.from) || !after.contains(old.to)) {
+            var removed = old
+            removed.isRemoved = true
+            links.append(removed)
+        }
+        shownModules = modules
+        shownLinks = links
+    }
+
+    /// Draws proposed edits over what's shown, or with nil, stops.
+    public func show(proposal: ProposalGraph?) {
+        guard proposal != self.proposal else { return }
+        self.proposal = proposal
     }
 
     // MARK: The text beside it

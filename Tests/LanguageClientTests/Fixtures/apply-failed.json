@@ -1,0 +1,11 @@
+{
+ "jsonrpc": "2.0",
+ "id": 6,
+ "error": {
+  "code": -32803,
+  "message": "Edit 2 of 2 (remove m99) can't be made. There's no module with the key m99 after the edits before it. The keys are m1 (Fast), m2 (Slow), m3 (Gate), m4 (Log), m5 (Risky), m6 (WriteLine #6), m7 (WriteLine #7). Nothing was changed.",
+  "data": {
+   "edit": 1
+  }
+ }
+}

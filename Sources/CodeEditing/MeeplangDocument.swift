@@ -24,6 +24,8 @@ public final class MeeplangDocument {
         case reloaded(Date)
         /// Saved, but the daemon hasn't loaded it: it isn't watching the file. It runs as it was until reloaded.
         case notWatched
+        /// Saved, and the daemon is watching the file, but it hasn't loaded it after a few seconds.
+        case notReloaded
         /// Saved, but it doesn't load, so the daemon runs it as it was.
         case savedBroken
         /// The daemon couldn't reload it, and why.
@@ -36,6 +38,44 @@ public final class MeeplangDocument {
     public struct Replacement: Equatable, Sendable {
         public let id: Int
         public let text: String
+    }
+
+    /// A change the view should make to its text, as the document has made it, with a number that's new each time:
+    /// replace `range` (UTF-16 offsets in the view's text before it) with `replacement`. The view makes it without
+    /// registering an undo of its own, since the document registers it.
+    public struct PendingEdit: Equatable, Sendable {
+        public let id: Int
+        public let range: Range<Int>
+        public let replacement: String
+    }
+
+    /// Edits someone proposed, such as Claude through the MCP server, waiting for the person to accept them (design,
+    /// section 8): the change to the text, and the graph it would make, for ghost tiles and a diff.
+    public struct Proposal: Equatable, Sendable {
+        public let id: Int
+        /// What it's for, in the proposer's words.
+        public let summary: String
+        public let edits: [MeepEdit]
+        /// The text version the changes are against.
+        public let version: Int
+        public let textEdits: [LSPTextEdit]
+        /// The text it would make.
+        public let text: String
+        /// The graph that text has.
+        public let graph: PipelineGraph?
+        /// The keys of the modules it adds.
+        public let added: [String]
+        /// The lines that change, with a line around each.
+        public let difference: [DiffLine]
+    }
+
+    /// What became of a proposal.
+    public enum ProposalOutcome: Equatable, Sendable {
+        /// Accepted and made; the keys of the modules it added.
+        case accepted([String])
+        case rejected
+        /// Another proposal took its place, or the text closed, before the person decided.
+        case withdrawn
     }
 
     /// Keys that changed, old to new, with a number that's new each time, so the canvas can move each tile to its
@@ -69,6 +109,15 @@ public final class MeeplangDocument {
     public private(set) var highlightsVersion = 0
     public private(set) var status: Status = .saved
     public private(set) var replacement: Replacement?
+    /// The latest change made to the text by an edit rather than in the view, for the view to make too.
+    public private(set) var pendingEdit: PendingEdit?
+    /// Edits waiting for the person to accept or reject them.
+    public private(set) var proposal: Proposal?
+    /// Every verb and inflection the text can use, once asked for.
+    public private(set) var verbs: [VerbEntry] = []
+    /// The text's one undo history: typing in the view, and edits made on the canvas or accepted from proposals. The
+    /// view registers its typing here too, so ⌘Z undoes whichever came last.
+    public let undoManager: UndoManager
     /// Why the keys may not be the daemon's, if they may not.
     public private(set) var baseProblem: String?
 
@@ -84,13 +133,21 @@ public final class MeeplangDocument {
     @ObservationIgnored private var reloadWait: Task<Void, Never>?
     @ObservationIgnored private var closed = false
     @ObservationIgnored private var fileWatch: DispatchSourceFileSystemObject?
+    @ObservationIgnored private var pendingEdits = 0
+    @ObservationIgnored private var proposals = 0
+    @ObservationIgnored private var decisions: [Int: CheckedContinuation<ProposalOutcome, Never>] = [:]
+    @ObservationIgnored private var verbsTask: Task<[VerbEntry], Never>?
     @ObservationIgnored private var replacements = 0
     @ObservationIgnored private var renamings = 0
     /// How long to wait after saving for the daemon to reload, before saying it isn't watching.
     @ObservationIgnored public var reloadTimeout: Duration = .seconds(2)
 
     /// A document for text from `path`, opened in the language server, following `pipeline`'s keys if it's running.
-    public init(path: String, text: String, pipeline: MeepPipeline? = nil, host: MeepHost? = nil, service: LanguageService, isReadOnly: Bool = false) {
+    public init(
+        path: String, text: String, pipeline: MeepPipeline? = nil, host: MeepHost? = nil, service: LanguageService,
+        isReadOnly: Bool = false, undoManager: UndoManager = UndoManager()
+    ) {
+        self.undoManager = undoManager
         self.path = path
         uri = MeepLanguageServer.uri(forPath: path)
         canonicalPath = Self.canonical(path)
@@ -247,11 +304,18 @@ public final class MeeplangDocument {
             status = .saved
             return
         }
+        // A daemon from before Meep2 0278da4 doesn't say whether it's watching, so a reload is waited for, and its not
+        // coming taken to mean it isn't.
+        let watching = pipeline.watching
+        if watching == false {
+            status = .notWatched
+            return
+        }
         status = .reloading
         reloadWait = Task { [weak self, reloadTimeout] in
-            try? await Task.sleep(for: reloadTimeout)
+            try? await Task.sleep(for: watching == true ? reloadTimeout * 3 : reloadTimeout)
             guard let self, !Task.isCancelled, self.status == .reloading else { return }
-            self.status = .notWatched
+            self.status = watching == true ? .notReloaded : .notWatched
         }
     }
 
@@ -277,9 +341,149 @@ public final class MeeplangDocument {
         reloadWait?.cancel()
         fileWatch?.cancel()
         fileWatch = nil
+        proposal = nil
+        for decision in decisions.values { decision.resume(returning: .withdrawn) }
+        decisions.removeAll()
         service.unregister(self)
         let uri = uri
         service.send { try await $0.close(uri) }
+    }
+
+    // MARK: Edits
+
+    /// Changes the text to `newText` as one step that can be undone, named `actionName`, and has the view make the
+    /// same change.
+    public func change(to newText: String, named actionName: String) {
+        guard newText != text, !closed else { return }
+        let old = text
+        let difference = TextDifference(from: old, to: newText)
+        apply(newText)
+        pendingEdits += 1
+        pendingEdit = PendingEdit(id: pendingEdits, range: difference.range, replacement: difference.replacement)
+        undoManager.beginUndoGrouping()
+        undoManager.registerUndo(withTarget: self) { document in
+            MainActor.assumeIsolated { document.change(to: old, named: actionName) }
+        }
+        undoManager.setActionName(actionName)
+        undoManager.endUndoGrouping()
+        if case .changedElsewhere = status { return }
+        status = isEdited ? .edited : .saved
+    }
+
+    /// Makes Meep2's edits to the text through `meep lsp`, as one step that can be undone, and returns the keys of
+    /// the modules they added. Throws the server's reason when an edit can't be made; nothing is changed then.
+    @discardableResult
+    public func apply(_ edits: [MeepEdit], named actionName: String) async throws -> [String] {
+        guard !isReadOnly else { throw DocumentError("This text is from \(host?.title ?? "another host")'s daemon, and can't be edited here yet.") }
+        let uri = uri
+        for _ in 0..<3 {
+            let version = self.version
+            do {
+                let answer = try await service.perform { try await $0.applyEdits(uri, version: version, edits: edits) }
+                // Typed meanwhile: the changes are for text that's gone, so they're asked for again.
+                guard version == self.version else { continue }
+                change(to: TextDifference.applying(answer.edits, to: text, lines: lines), named: actionName)
+                return answer.added.map(\.key)
+            } catch let LanguageServerError.refused(code, _, _, _) where code == LanguageServerError.contentModified {
+                continue
+            } catch let LanguageServerError.refused(_, message, _, _) {
+                throw DocumentError(message)
+            }
+        }
+        throw DocumentError("The text kept changing while the edit was being made. Try again.")
+    }
+
+    /// Whether the text's graph is here, with the daemon's keys if the pipeline runs, and the text loads: until then,
+    /// edits naming modules by key can't be made.
+    public var isReadyForEdits: Bool {
+        guard let answer, answer.graph != nil, answer.current else { return false }
+        return pipeline?.state.isLive != true || answer.base != nil || baseProblem != nil
+    }
+
+    /// Waits until ``isReadyForEdits``, for at most `timeout`.
+    public func ready(timeout: Duration = .seconds(10)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while !isReadyForEdits, clock.now < deadline, !closed {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return isReadyForEdits
+    }
+
+    /// Every verb and inflection the text can use, asked for once.
+    @discardableResult
+    public func loadVerbs() async -> [VerbEntry] {
+        if !verbs.isEmpty { return verbs }
+        if let verbsTask { return await verbsTask.value }
+        let (service, uri) = (service, uri)
+        let task = Task { (try? await service.verbs(for: uri)) ?? [] }
+        verbsTask = task
+        let loaded = await task.value
+        if !loaded.isEmpty { verbs = loaded }
+        verbsTask = nil
+        return loaded
+    }
+
+    // MARK: Proposals
+
+    /// Shows edits as a proposal, for the person to accept or reject: the text they'd make and its graph, without
+    /// changing anything yet. A proposal waiting already is withdrawn.
+    public func propose(_ edits: [MeepEdit], summary: String) async throws -> Proposal {
+        guard !isReadOnly else { throw DocumentError("This text is from \(host?.title ?? "another host")'s daemon, and can't be edited here yet.") }
+        let (uri, version) = (uri, version)
+        let answer: EditAnswer
+        do {
+            answer = try await service.perform { try await $0.applyEdits(uri, version: version, edits: edits, preview: true) }
+        } catch let LanguageServerError.refused(_, message, _, _) {
+            throw DocumentError(message)
+        }
+        guard version == self.version else { throw DocumentError("The text changed while the proposal was being made. Propose it again.") }
+        let newText = TextDifference.applying(answer.edits, to: text, lines: lines)
+        proposals += 1
+        let proposal = Proposal(
+            id: proposals, summary: summary, edits: edits, version: version, textEdits: answer.edits, text: newText,
+            graph: answer.graph, added: answer.added.map(\.key), difference: DiffLine.between(text, newText)
+        )
+        withdrawProposal()
+        self.proposal = proposal
+        return proposal
+    }
+
+    /// Waits for the person to decide on a proposal.
+    public func decision(on proposal: Proposal) async -> ProposalOutcome {
+        guard self.proposal?.id == proposal.id else { return .withdrawn }
+        return await withCheckedContinuation { decisions[proposal.id] = $0 }
+    }
+
+    /// Makes the proposal's edits, as one step that can be undone. If the text has changed since, the edits are made
+    /// on the text as it is now.
+    @discardableResult
+    public func acceptProposal() async throws -> [String] {
+        guard let proposal else { return [] }
+        let keys: [String]
+        if proposal.version == version {
+            change(to: proposal.text, named: proposal.summary)
+            keys = proposal.added
+        } else {
+            keys = try await apply(proposal.edits, named: proposal.summary)
+        }
+        finish(proposal, .accepted(keys))
+        return keys
+    }
+
+    public func rejectProposal() {
+        guard let proposal else { return }
+        finish(proposal, .rejected)
+    }
+
+    private func withdrawProposal() {
+        guard let proposal else { return }
+        finish(proposal, .withdrawn)
+    }
+
+    private func finish(_ proposal: Proposal, _ outcome: ProposalOutcome) {
+        if self.proposal?.id == proposal.id { self.proposal = nil }
+        decisions.removeValue(forKey: proposal.id)?.resume(returning: outcome)
     }
 
     // MARK: Keys the daemon's
@@ -327,7 +531,13 @@ public final class MeeplangDocument {
             let source = try await link.source(name)
             let graph = try await link.graph(name)
             guard !Task.isCancelled else { return }
-            if case .reloading = status, source.text == savedText { status = .reloaded(Date()) }
+            // A reload that came late still counts: the daemon runs what was saved.
+            switch status {
+            case .reloading, .notWatched, .notReloaded:
+                if source.text == savedText, !isEdited { status = .reloaded(Date()) }
+            default:
+                break
+            }
             if lastBase?.version == graph.version, lastBase?.text == source.text { return }
             let answer = try await service.perform { try await $0.setBase(uri, pipeline: name, graph: graph, text: source.text) }
             lastBase = (graph.version, source.text)

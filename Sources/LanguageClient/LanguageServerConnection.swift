@@ -3,8 +3,14 @@ import Transport
 
 /// Why a language server request failed.
 public enum LanguageServerError: Error, Equatable, LocalizedError {
-    /// The server answered with an error.
-    case refused(code: Int, message: String)
+    /// The code a server refuses with when the text has changed since the version asked about (`ContentModified`).
+    public static let contentModified = -32801
+    /// The code for a request that was understood but couldn't be done (`RequestFailed`).
+    public static let requestFailed = -32803
+
+    /// The server answered with an error: for `meep/applyEdits`, which edit failed, counting from 0, or for a stale
+    /// version, the server's version.
+    case refused(code: Int, message: String, edit: Int? = nil, version: Int? = nil)
     /// The server has stopped, or the stream to it closed.
     case stopped(String)
     /// The server sent something that couldn't be read.
@@ -12,7 +18,7 @@ public enum LanguageServerError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .refused(_, let message): message
+        case .refused(_, let message, _, _): message
         case .stopped(let reason): reason
         case .unreadable(let reason): reason
         }
@@ -107,11 +113,11 @@ public actor LanguageServerConnection {
             response = try JSONDecoder().decode(Response<Result>.self, from: answer)
         } catch {
             if let failure = try? JSONDecoder().decode(Response<Ignored>.self, from: answer).error {
-                throw LanguageServerError.refused(code: failure.code, message: failure.message)
+                throw failure.error
             }
             throw LanguageServerError.unreadable("The answer to \(method) couldn't be read: \(error)")
         }
-        if let failure = response.error { throw LanguageServerError.refused(code: failure.code, message: failure.message) }
+        if let failure = response.error { throw failure.error }
         return response.result
     }
 
@@ -215,6 +221,16 @@ public actor LanguageServerConnection {
     struct Failure: Decodable {
         var code: Int
         var message: String
+        var data: Details?
+
+        struct Details: Decodable {
+            var edit: Int?
+            var version: Int?
+        }
+
+        var error: LanguageServerError {
+            .refused(code: code, message: message, edit: data?.edit, version: data?.version)
+        }
     }
 
     struct Ignored: Decodable {}

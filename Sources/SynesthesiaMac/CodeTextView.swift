@@ -32,6 +32,7 @@ struct MacCodeText: NSViewRepresentable {
         textView.delegate = coordinator
         coordinator.textView = textView
         coordinator.appliedReplacement = document.replacement?.id
+        coordinator.appliedPendingEdit = document.pendingEdit?.id
 
         let scroll = CodeScrollView()
         scroll.drawsBackground = true
@@ -53,6 +54,7 @@ struct MacCodeText: NSViewRepresentable {
         let coordinator = context.coordinator
         // Read here so SwiftUI updates the view when they change.
         let replacement = document.replacement
+        let pendingEdit = document.pendingEdit
         let version = document.highlightsVersion
         let diagnostics = document.diagnostics
         let answer = document.answer
@@ -63,6 +65,9 @@ struct MacCodeText: NSViewRepresentable {
 
         if let replacement, replacement.id != coordinator.appliedReplacement {
             coordinator.take(replacement)
+        }
+        if let pendingEdit, pendingEdit.id != coordinator.appliedPendingEdit {
+            coordinator.take(pendingEdit)
         }
         coordinator.applyStyles()
         coordinator.follow(selection: selection, hovered: hovered)
@@ -83,6 +88,7 @@ final class CodeTextCoordinator: NSObject, NSTextViewDelegate {
     weak var textView: CodeTextView?
     weak var gutter: GutterView?
     var appliedReplacement: Int?
+    var appliedPendingEdit: Int?
     private var appliedStyles: (version: Int, diagnostics: [LSPDiagnostic])?
     private var appliedFocus: Int?
     /// The module the cursor last selected, so the stage selecting it back doesn't scroll the text.
@@ -136,6 +142,35 @@ final class CodeTextCoordinator: NSObject, NSTextViewDelegate {
         textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
         settingSelection = false
         appliedStyles = nil
+    }
+
+    /// Makes a change the document made, from an edit on the canvas or an undo of one, without an undo of its own:
+    /// the document's undo history has it.
+    func take(_ edit: MeeplangDocument.PendingEdit) {
+        appliedPendingEdit = edit.id
+        guard let textView, let storage = textView.textStorage else { return }
+        textView.breakUndoCoalescing()
+        let range = NSRange(location: edit.range.lowerBound, length: edit.range.count)
+        let selection = textView.selectedRange()
+        settingSelection = true
+        defer { settingSelection = false }
+        if NSMaxRange(range) <= storage.length, (storage.string as NSString).replacingCharacters(in: range, with: edit.replacement) == document.text {
+            storage.replaceCharacters(in: range, with: edit.replacement)
+            // The cursor keeps its place in the text around the change.
+            let delta = (edit.replacement as NSString).length - range.length
+            let location = selection.location >= NSMaxRange(range) ? selection.location + delta : min(selection.location, range.location + (edit.replacement as NSString).length)
+            textView.setSelectedRange(NSRange(location: max(0, location), length: 0))
+        } else {
+            // Out of step: the document's text is the truth.
+            textView.string = document.text
+        }
+        appliedStyles = nil
+        gutter?.needsDisplay = true
+    }
+
+    /// The text view's typing goes into the document's undo history, with the canvas's edits.
+    func undoManager(for view: NSTextView) -> UndoManager? {
+        document.undoManager
     }
 
     // MARK: Colours and problems

@@ -1,4 +1,6 @@
+import CodeEditing
 import ContinuumKit
+import LanguageClient
 import MeepClient
 import Stage
 import SwiftUI
@@ -30,6 +32,9 @@ struct PipelineCanvas: View {
     let stage: PipelineStage
     @Environment(\.canvasSurface) private var surface
     @Environment(\.workspace) private var workspace
+    @Environment(\.pipelineEditor) private var editor
+    @State private var showsPalette = false
+    @State private var verbs: [VerbEntry] = []
 
     var body: some View {
         GeometryReader { geometry in
@@ -58,6 +63,28 @@ struct PipelineCanvas: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) { ZoomButtons(stage: stage).padding(10) }
+            .overlay(alignment: .bottomLeading) {
+                if let editor, editor.canEdit {
+                    Button { showsPalette.toggle() } label: { Image(systemName: "plus") }
+                        .buttonStyle(.borderless)
+                        .padding(6)
+                        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(.white.opacity(0.12)))
+                        .environment(\.colorScheme, .dark)
+                        .help("Add a module: drag a verb onto a tile, a wire or the background")
+                        .popover(isPresented: $showsPalette, arrowEdge: .top) {
+                            VerbPalette(verbs: verbs, editor: editor)
+                                .task { await loadVerbs() }
+                        }
+                        .padding(10)
+                }
+            }
+            .overlay(alignment: .top) {
+                if let notice = editor?.notice {
+                    CanvasNotice(notice: notice) { editor?.dismissNotice() }.padding(10)
+                }
+            }
+            .onDrop(of: [.plainText, .utf8PlainText], delegate: CanvasDropDelegate(stage: stage, editor: editor, verbs: { verbs }))
         }
         .onAppear {
             stage.pipeline.watchers += 1
@@ -69,6 +96,22 @@ struct PipelineCanvas: View {
         }
         .focusedSceneValue(\.pipelineStage, stage)
     }
+}
+
+extension PipelineCanvas {
+    /// The verbs the pipeline can use, from its text if it's open, or else the core modules'.
+    func loadVerbs() async {
+        guard verbs.isEmpty else { return }
+        if let pipeline = editor?.pipeline, let workspace {
+            await workspace.openText(for: pipeline, host: editor?.host)
+            if let document = workspace.document(for: pipeline) {
+                verbs = await document.loadVerbs()
+                return
+            }
+        }
+        verbs = (try? await workspace?.language?.verbs()) ?? []
+    }
+
 }
 
 struct ZoomButtons: View {

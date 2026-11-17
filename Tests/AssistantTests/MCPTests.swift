@@ -1,5 +1,6 @@
 import CodeEditing
 import ContinuumKit
+import LanguageClient
 import CoreGraphics
 import Foundation
 import Simulation
@@ -77,6 +78,15 @@ final class TestViewer: Viewer {
     func reveal() { reveals += 1 }
 
     func document(for pipeline: MeepPipeline) -> MeeplangDocument? { nil }
+
+    /// What the person decides, in the tests.
+    var decision: ProposalResult = .rejected
+    private(set) var proposed: [(edits: [MeepEdit], summary: String)] = []
+
+    func propose(_ edits: [MeepEdit], summary: String, to pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async throws -> ProposalResult {
+        proposed.append((edits, summary))
+        return decision
+    }
     var showsText: Bool { false }
     var language: LanguageService? { nil }
 
@@ -128,7 +138,7 @@ struct MCPSessionTests {
 
         let tools = try await client.request("tools/list")
         let names = tools["result"]?["tools"]?.array?.compactMap { $0["name"]?.string }
-        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "describe_verbs", "watch_counts", "describe_view", "capture_view", "show"])
+        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "describe_verbs", "watch_counts", "describe_view", "capture_view", "show", "propose_edits"])
         for tool in tools["result"]?["tools"]?.array ?? [] {
             #expect(tool["inputSchema"]?["type"] == "object")
             #expect(tool["description"]?.string?.isEmpty == false)
@@ -285,6 +295,29 @@ struct ToolTests {
         #expect(result.isError)
         guard case .text(let message)? = result.content.first else { Issue.record("no text"); return }
         #expect(message.contains("has none"))
+    }
+
+    @Test func proposalsReachTheAppAndSayWhatThePersonDecided() async throws {
+        let viewer = try await TestViewer()
+        defer { viewer.stop() }
+        let registry = ContinuumTools.registry(for: viewer)
+        viewer.decision = .accepted(added: ["m12"])
+        let edits: JSONValue = [
+            ["module": "m3", "kind": "insert", "value": "Where msg.Count > 2 as Gate"],
+            ["module": "+0", "kind": "set-modifier", "name": "buffer", "value": "5"],
+        ]
+        let (value, result) = try await call(registry, "propose_edits", ["address": "orders", "summary": "Gate the big ones", "edits": edits])
+        #expect(!result.isError)
+        #expect(value?["outcome"]?.string == "accepted")
+        #expect(value?["added"]?.array?.first?.string?.hasSuffix("/orders/m12") == true)
+        #expect(viewer.proposed.first?.summary == "Gate the big ones")
+        #expect(viewer.proposed.first?.edits == [.insert("Where msg.Count > 2 as Gate", after: "m3"), .setModifier("+0", "buffer", to: "5")])
+
+        viewer.decision = .undecided
+        let (undecided, _) = try await call(registry, "propose_edits", ["address": "orders", "summary": "Again", "edits": [["module": "m3", "kind": "remove"]]])
+        #expect(undecided?["outcome"]?.string == "undecided")
+        let (_, missing) = try await call(registry, "propose_edits", ["address": "orders", "edits": [["module": "m3", "kind": "remove"]]])
+        #expect(missing.isError)
     }
 
     @Test func verbsNeedALanguageServer() async throws {

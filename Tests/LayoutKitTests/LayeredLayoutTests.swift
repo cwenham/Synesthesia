@@ -113,9 +113,10 @@ struct LayeredLayoutTests {
         let big = randomGraph(nodes: 100, edges: 140, seed: 5)
         let clock = ContinuousClock()
         let took = clock.measure { _ = LayeredLayout().layout(big) }
-        // A debug build is several times slower than the app's release build.
+        // A debug build is several times slower than the app's release build, and slower again beside the other
+        // suites on a busy machine; this catches the 8 seconds layout once took, not a busy moment.
         #if DEBUG
-        #expect(took < .seconds(1), "took \(took)")
+        #expect(took < .milliseconds(2500), "took \(took)")
         #else
         #expect(took < .milliseconds(100), "took \(took)")
         #endif

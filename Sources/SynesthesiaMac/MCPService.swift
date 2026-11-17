@@ -2,6 +2,7 @@ import AppKit
 import Assistant
 import CodeEditing
 import ContinuumKit
+import LanguageClient
 import Foundation
 import QuartzCore
 import Stage
@@ -41,6 +42,45 @@ final class AppViewer: Viewer {
     var showsText: Bool { workspace.showsText }
 
     var language: LanguageService? { workspace.language }
+
+    /// Opens the pipeline with its text beside the canvas, shows the edits as a proposal, and waits for the person.
+    func propose(_ edits: [MeepEdit], summary: String, to pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async throws -> ProposalResult {
+        reveal()
+        workspace.selection = pipeline.address
+        workspace.showsText = true
+        await workspace.openText(for: pipeline, host: host)
+        guard let document = workspace.document(for: pipeline) else {
+            throw ToolError(workspace.textProblems[pipeline.id] ?? "\(pipeline.name)'s text couldn't be opened.")
+        }
+        guard !document.isReadOnly else { throw ToolError("\(pipeline.name) is on \(host.title), whose text can't be edited here yet.") }
+        guard await document.ready() else {
+            throw ToolError(document.answer?.current == false
+                ? "\(pipeline.name)'s text doesn't load as it is, so edits can't be made until the person mends it."
+                : "The language server hasn't answered for \(pipeline.name) yet. Try again.")
+        }
+        let proposal: MeeplangDocument.Proposal
+        do {
+            proposal = try await document.propose(edits, summary: summary)
+        } catch {
+            throw ToolError(error.localizedDescription)
+        }
+        let outcome = await withTaskGroup(of: MeeplangDocument.ProposalOutcome?.self) { group in
+            group.addTask { await document.decision(on: proposal) }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        switch outcome {
+        case .accepted(let keys)?: return .accepted(added: keys)
+        case .rejected?: return .rejected
+        case .withdrawn?: return .withdrawn
+        case nil: return .undecided
+        }
+    }
 
     func canvasImage() -> CGImage? {
         guard let stage, let renderer = MacCanvas.renderer, stage.currentViewSize.width > 0 else { return nil }
