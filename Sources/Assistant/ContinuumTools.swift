@@ -666,10 +666,11 @@ public enum ContinuumTools {
             ]
             let streams = snapshot.streams.filter { $0.path.id == wire.id }
             let singles = snapshot.particles.filter { $0.owner == wire.id }
-            let messageStream = streams.contains { $0.color != Theme.error }
-            let errorStream = streams.contains { $0.color == Theme.error }
-            let messages = singles.filter { $0.color != Theme.error }.count
-            let errors = singles.filter { $0.color == Theme.error }.count
+            let error = snapshot.theme.colors.error
+            let messageStream = streams.contains { $0.color != error }
+            let errorStream = streams.contains { $0.color == error }
+            let messages = singles.filter { $0.color != error }.count
+            let errors = singles.filter { $0.color == error }.count
             entry["messages"] = messageStream ? "rate streaks" : (messages > 0 ? .string("\(messages) single messages") : "none now")
             if errorStream || errors > 0 { entry["errors"] = errorStream ? "rate streaks" : .string("\(errors) single errors") }
             if wire.isHovered { entry["hovered"] = true }

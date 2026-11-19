@@ -28,33 +28,112 @@ float pixel(constant Uniforms& u) { return 1.0 / (u.scale * u.pixelScale); }
 float4 premultiply(float3 rgb, float a) { return float4(rgb * a, a); }
 float4 over(float4 below, float4 above) { return above + below * (1 - above.a); }
 
-// MARK: Background: off-black with a faint grid of dots that thins out as you zoom out.
+// MARK: Background: the theme's colour, a starfield travelling toward the viewer, and a faint grid of dots that
+// thins out as you zoom out.
 
-struct BackgroundColors { float4 background; float4 grid; };
-struct BackgroundOut { float4 position [[position]]; float2 world; };
+struct BackgroundLook {
+    float4 background;
+    float4 grid;
+    float4 starColor;
+    float4 starTint;
+    float gridSpacing;
+    float coarseGridSpacing;
+    float gridDotRadius;    // points
+    float starOpacity;
+    float starTravel;       // star lifetimes travelled; repeats every 100
+    float starSpeed;        // lifetimes a second, now
+    float starDensity;
+    float starCellSize;     // points
+    float starSize;         // points, when nearest
+    float starBrightness;
+    float starStreak;
+    float starParallax;
+    int starLayers;
+    float padding0, padding1, padding2;
+};
+
+struct BackgroundOut { float4 position [[position]]; float2 world; float2 view; };
 
 vertex BackgroundOut background_vertex(uint vid [[vertex_id]], constant Uniforms& u [[buffer(0)]]) {
     float2 c = corners[vid];
     BackgroundOut out;
     out.position = float4(c.x * 2 - 1, 1 - c.y * 2, 0, 1);
     out.world = (c * u.viewSize - u.viewSize * 0.5) / u.scale + u.center;
+    out.view = c * u.viewSize - u.viewSize * 0.5;
     return out;
 }
 
-float gridDots(float2 world, float spacing, constant Uniforms& u) {
+float gridDots(float2 world, float spacing, float radius, constant Uniforms& u) {
     float2 offset = (world / spacing - round(world / spacing)) * spacing;
     float d = length(offset) * u.scale * u.pixelScale;
-    float radius = 1.0 * u.pixelScale;
-    float dot = clamp(radius - d + 0.5, 0.0, 1.0);
+    float dot = clamp(radius * u.pixelScale - d + 0.5, 0.0, 1.0);
     return dot * smoothstep(7.0, 16.0, spacing * u.scale);
 }
 
+float hash12(float2 p) {
+    float3 p3 = fract(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float2 hash22(float2 p) {
+    float3 p3 = fract(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+/// The starfield's light at `view`, in points from the middle of the view, where the stars come from.
+///
+/// Stars live in layers, each a sky of cells holding at most one star. A layer's age runs from 0, far away, to 1, at
+/// the viewer; as it ages its sky is drawn larger, so its stars spread out from the middle, grow and brighten, then
+/// fade as they pass. When a layer comes round again its stars are new ones. The layers are spread evenly through
+/// the ages, so there are always some far and some near.
+float3 starfield(float2 view, constant BackgroundLook& look, constant Uniforms& u) {
+    float px = 1.0 / u.pixelScale;
+    float3 light = float3(0);
+    int layers = look.starLayers;
+    for (int i = 0; i < layers; i++) {
+        float age = look.starTravel + float(i) / float(layers);
+        float z = fract(age);
+        float generation = fmod(floor(age), 100.0);
+        // Points in the layer's sky for each point on screen: one when far, ever fewer as it nears.
+        float shrink = mix(1.0, 0.08, z);
+        float2 sky = view * shrink;
+        float2 cell = floor(sky / look.starCellSize);
+        float2 seed = cell + float2(float(i) * 37.0 + generation * 113.0, generation * 71.0 - float(i) * 17.0);
+        if (hash12(seed) > look.starDensity) continue;
+        float2 star = (cell + 0.2 + 0.6 * hash22(seed + 5.0)) * look.starCellSize / shrink;
+        float2 delta = view - star;
+        // Near stars streak back toward the middle, the faster the longer.
+        float2 outward = normalize(star + float2(0.0001, 0));
+        float along = dot(delta, outward);
+        float across = dot(delta, float2(-outward.y, outward.x));
+        float stretch = 1.0 + look.starStreak * look.starSpeed * z * z;
+        if (along < 0) along /= stretch;
+        float size = look.starSize * mix(0.25, 1.0, z * z) * mix(0.6, 1.25, hash12(seed + 9.0));
+        float radius = max(size, 0.7 * px);
+        float d = length(float2(along, across));
+        float glow = exp(-(d * d) / (radius * radius)) * (size / radius);
+        float fade = smoothstep(0.0, 0.35, z) * (1.0 - smoothstep(0.82, 1.0, z));
+        float3 color = mix(look.starColor.rgb, look.starTint.rgb, step(0.72, hash12(seed + 3.0)));
+        light += color * glow * fade * look.starBrightness;
+    }
+    return light;
+}
+
 fragment float4 background_fragment(BackgroundOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
-                                    constant BackgroundColors& colors [[buffer(1)]]) {
-    float fine = gridDots(in.world, 24.0, u);
-    float coarse = gridDots(in.world, 120.0, u) * (1 - smoothstep(7.0, 16.0, 24.0 * u.scale));
-    float3 rgb = mix(colors.background.rgb, colors.grid.rgb, max(fine, coarse));
-    return float4(rgb, 1);
+                                    constant BackgroundLook& look [[buffer(1)]]) {
+    float3 rgb = look.background.rgb;
+    if (look.starOpacity > 0) {
+        // Panning shifts the stars a little, so they seem far behind the grid.
+        float2 view = in.view + u.center * look.starParallax;
+        rgb += starfield(view, look, u) * look.starOpacity;
+    }
+    float fine = gridDots(in.world, look.gridSpacing, look.gridDotRadius, u);
+    float coarse = gridDots(in.world, look.coarseGridSpacing, look.gridDotRadius, u)
+        * (1 - smoothstep(7.0, 16.0, look.gridSpacing * u.scale));
+    rgb = mix(rgb, look.grid.rgb, max(fine, coarse));
+    return float4(min(rgb, float3(1)), 1);
 }
 
 // MARK: Tiles: a face with depth below it, like a Mahjong tile, and a hatched shadow.
@@ -69,6 +148,36 @@ struct Tile {
     float depth;
 };
 
+struct TileLook {
+    float4 flashColor;
+    float2 shadowOffset;
+    float cornerRadius;
+    float triangleCornerRadius;
+    float outlineWidth;
+    float selectedOutlineScale;
+    float faceLift;
+    float faceTint;
+    float sideShade;
+    float sideTint;
+    float sideOutlineOpacity;
+    float edgeOpacity;
+    float bevelInset;
+    float bevelOpacity;
+    float hoverGlow;
+    float selectedGlow;
+    float flashGlow;
+    float glowReach;
+    float ghostFaceOpacity;
+    float ghostDashLength;
+    float ghostDashDuty;
+    float hatchSpacing;     // 0 for a flat shadow
+    float hatchOpacity;
+    float flatOpacity;
+    float margin;
+    float flashFaceTint;
+    float padding0, padding1;
+};
+
 struct TileOut {
     float4 position [[position]];
     float2 local;
@@ -76,9 +185,9 @@ struct TileOut {
 };
 
 vertex TileOut tile_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], constant Uniforms& u [[buffer(0)]],
-                           constant Tile* tiles [[buffer(1)]]) {
+                           constant Tile* tiles [[buffer(1)]], constant TileLook& look [[buffer(3)]]) {
     Tile t = tiles[iid];
-    float margin = 22;
+    float margin = look.margin;
     float2 low = -t.halfSize - margin;
     float2 high = t.halfSize + float2(margin, margin + t.depth);
     float2 local = mix(low, high, corners[vid]);
@@ -109,8 +218,8 @@ float sdTriangle(float2 p, float2 p0, float2 p1, float2 p2) {
 
 /// The tile's outline as a signed distance, negative inside. Triangles are shrunk toward their middle, then grown
 /// back round, so their corners are rounded and their size stays the same.
-float sdShape(float2 p, int shape, float2 h) {
-    if (shape == 0) return sdRoundBox(p, h, 10.0);
+float sdShape(float2 p, int shape, float2 h, constant TileLook& look) {
+    if (shape == 0) return sdRoundBox(p, h, min(look.cornerRadius, min(h.x, h.y)));
     if (shape == 1) return length(p) - h.x;
     float2 a, b, c;
     if (shape == 2) { a = float2(-h.x, -h.y); b = float2(h.x, -h.y); c = float2(0, h.y); }
@@ -121,17 +230,17 @@ float sdShape(float2 p, int shape, float2 h) {
     float2 middle = (a * la + b * lb + c * lc) / perimeter;
     float area = abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) * 0.5;
     float inradius = area / (perimeter * 0.5);
-    float corner = min(7.0, inradius * 0.6);
+    float corner = min(look.triangleCornerRadius, inradius * 0.6);
     float k = (inradius - corner) / inradius;
     a = middle + (a - middle) * k; b = middle + (b - middle) * k; c = middle + (c - middle) * k;
     return sdTriangle(p, a, b, c) - corner;
 }
 
 /// The tile with its side: the face swept down by its depth.
-float sdBody(float2 p, int shape, float2 h, float depth) {
-    float d = sdShape(p, shape, h);
+float sdBody(float2 p, int shape, float2 h, float depth, constant TileLook& look) {
+    float d = sdShape(p, shape, h, look);
     for (int step = 1; step <= 6; step++) {
-        d = min(d, sdShape(p - float2(0, depth * float(step) / 6.0), shape, h));
+        d = min(d, sdShape(p - float2(0, depth * float(step) / 6.0), shape, h, look));
     }
     return d;
 }
@@ -140,65 +249,66 @@ float fill(float d, float px) { return clamp(0.5 - d / px, 0.0, 1.0); }
 float stroke(float d, float width, float px) { return clamp(0.5 - (abs(d) - width * 0.5) / px, 0.0, 1.0); }
 
 fragment float4 tile_shadow_fragment(TileOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
-                                     constant Tile* tiles [[buffer(1)]]) {
+                                     constant Tile* tiles [[buffer(1)]], constant TileLook& look [[buffer(3)]]) {
     Tile t = tiles[in.index];
     float px = pixel(u);
-    float2 offset = float2(6.0, 7.0);
-    float shadow = sdBody(in.local - offset, t.shape, t.halfSize, t.depth);
-    float body = sdBody(in.local, t.shape, t.halfSize, t.depth);
+    float shadow = sdBody(in.local - look.shadowOffset, t.shape, t.halfSize, t.depth, look);
+    float body = sdBody(in.local, t.shape, t.halfSize, t.depth, look);
     float region = fill(shadow, px) * clamp(0.5 + body / px, 0.0, 1.0);
     if (region <= 0) discard_fragment();
     // Diagonal hatching, drawn in world units, fading to a flat tint when the lines would be too close to see.
-    float spacing = 4.5;
+    float spacing = max(look.hatchSpacing, 0.001);
     float across = abs(fract((in.local.x + in.local.y) / spacing) - 0.5) * spacing * 0.7071;
     float halfWidth = max(0.55 * px, 0.45);
     float line = clamp(0.5 - (across - halfWidth) / px, 0.0, 1.0);
-    float visible = smoothstep(2.5, 4.5, spacing / px);
-    float alpha = (line * 0.42 * visible + 0.12 * (1 - visible)) * region;
+    float visible = look.hatchSpacing > 0 ? smoothstep(2.5, 4.5, spacing / px) : 0.0;
+    float alpha = (line * look.hatchOpacity * visible + look.flatOpacity * (1 - visible)) * region;
     if ((t.flags & 4) != 0) alpha *= 0.5;
     if ((t.flags & 8) != 0) discard_fragment();
     return premultiply(t.color.rgb, alpha);
 }
 
 fragment float4 tile_fragment(TileOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
-                              constant Tile* tiles [[buffer(1)]], constant float4& background [[buffer(2)]]) {
+                              constant Tile* tiles [[buffer(1)]], constant float4& background [[buffer(2)]],
+                              constant TileLook& look [[buffer(3)]]) {
     Tile t = tiles[in.index];
     float px = pixel(u);
-    float line = clamp(1.6 * px, 0.9, 3.0 * px);
-    float face = sdShape(in.local, t.shape, t.halfSize);
-    float body = sdBody(in.local, t.shape, t.halfSize, t.depth);
-    float3 color = mix(t.color.rgb, float3(1.0, 0.30, 0.37), t.flash);
+    float line = clamp(look.outlineWidth * px, 0.9, look.outlineWidth * 1.875 * px);
+    float face = sdShape(in.local, t.shape, t.halfSize, look);
+    float body = sdBody(in.local, t.shape, t.halfSize, t.depth, look);
+    float3 color = mix(t.color.rgb, look.flashColor.rgb, t.flash);
     bool hovered = (t.flags & 1) != 0;
     bool selected = (t.flags & 2) != 0;
     bool ghost = (t.flags & 8) != 0;
 
     float4 result = float4(0);
     // A glow round it when hovered, selected or failing.
-    float glow = (hovered ? 0.30 : 0.0) + (selected ? 0.55 : 0.0) + t.flash * 0.9;
+    float glow = (hovered ? look.hoverGlow : 0.0) + (selected ? look.selectedGlow : 0.0) + t.flash * look.flashGlow;
     if (glow > 0 && body > 0) {
-        result = premultiply(color, glow * exp(-body / 7.0) * clamp(body / px, 0.0, 1.0));
+        result = premultiply(color, glow * exp(-body / max(look.glowReach, 0.01)) * clamp(body / px, 0.0, 1.0));
     }
+    float selectedLine = selected ? line * look.selectedOutlineScale : line;
     if (ghost) {
         // Not running yet, or being mended: a faint face, and an outline of dashes, cut by diagonal bands in world
         // units so they keep their spacing on every shape.
         float3 faceColor = background.rgb * 1.15 + color * 0.04;
-        result = over(result, premultiply(faceColor, 0.85 * fill(face, px)));
-        float dash = step(0.45, fract((in.local.x - in.local.y) / 9.0));
-        result = over(result, premultiply(color, dash * stroke(face, selected ? line * 1.8 : line * 1.2, px)));
+        result = over(result, premultiply(faceColor, look.ghostFaceOpacity * fill(face, px)));
+        float dash = step(1.0 - look.ghostDashDuty, fract((in.local.x - in.local.y) / look.ghostDashLength));
+        result = over(result, premultiply(color, dash * stroke(face, selected ? selectedLine : line * 1.2, px)));
         return result;
     }
     // The side: darker, its outline dimmer.
-    float3 side = background.rgb * 0.7 + t.color.rgb * 0.05;
+    float3 side = background.rgb * look.sideShade + t.color.rgb * look.sideTint;
     result = over(result, premultiply(side, fill(body, px)));
-    result = over(result, premultiply(color, 0.55 * stroke(body, line, px)));
+    result = over(result, premultiply(color, look.sideOutlineOpacity * stroke(body, line, px)));
     // A line where the face meets the side.
-    float edge = sdShape(in.local - float2(0, t.depth * 0.5), t.shape, t.halfSize);
-    result = over(result, premultiply(color, 0.22 * stroke(edge, line * 0.6, px) * fill(-face, px)));
+    float edge = sdShape(in.local - float2(0, t.depth * 0.5), t.shape, t.halfSize, look);
+    result = over(result, premultiply(color, look.edgeOpacity * stroke(edge, line * 0.6, px) * fill(-face, px)));
     // The face, with a bevel inside its outline.
-    float3 faceColor = background.rgb * 1.35 + t.color.rgb * 0.07 + float3(1, 0.3, 0.37) * t.flash * 0.18;
+    float3 faceColor = background.rgb * look.faceLift + t.color.rgb * look.faceTint + look.flashColor.rgb * t.flash * look.flashFaceTint;
     result = over(result, premultiply(faceColor, fill(face, px)));
-    result = over(result, premultiply(color, 0.24 * stroke(face + 4.0, line * 0.6, px)));
-    result = over(result, premultiply(color, stroke(face, selected ? line * 1.8 : line, px)));
+    result = over(result, premultiply(color, look.bevelOpacity * stroke(face + look.bevelInset, line * 0.6, px)));
+    result = over(result, premultiply(color, stroke(face, selectedLine, px)));
     return result;
 }
 
@@ -245,15 +355,15 @@ vertex SegmentOut wire_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], 
 }
 
 fragment float4 wire_fragment(SegmentOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
-                              constant Segment* segments [[buffer(1)]]) {
+                              constant Segment* segments [[buffer(1)]], constant float2& dashes [[buffer(2)]]) {
     Segment s = segments[in.index];
     float px = pixel(u);
     float along = clamp(in.local.x, 0.0, in.length);
     float d = length(float2(in.local.x - along, in.local.y));
     float coverage = clamp(0.5 - (d - in.halfWidth) / px, 0.0, 1.0);
     if (s.kind == 2) {
-        float dash = fract((s.along + in.local.x) / 12.0);
-        coverage *= step(dash, 0.55);
+        float dash = fract((s.along + in.local.x) / max(dashes.x, 0.5));
+        coverage *= step(dash, dashes.y);
     }
     return premultiply(s.color.rgb, s.color.a * coverage);
 }

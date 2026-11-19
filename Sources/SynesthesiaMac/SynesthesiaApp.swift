@@ -15,6 +15,7 @@ struct SynesthesiaApp: App {
     @State private var model = AppModel.shared
     @AppStorage("showsSimulatedHost") private var showsSimulatedHost = true
     @AppStorage("showsText") private var showsText = false
+    @AppStorage(CanvasLook.starfieldKey) private var showsStarfield = true
 
     init() {
         // Hosts are followed and MCP is served from launch, whether or not the window is open: synesthesia-mcp may
@@ -22,6 +23,14 @@ struct SynesthesiaApp: App {
         AppModel.shared.start()
         AppModel.shared.showSimulatedHost(UserDefaults.standard.object(forKey: "showsSimulatedHost") as? Bool ?? true)
         AppModel.shared.workspace.showsText = UserDefaults.standard.bool(forKey: "showsText")
+        // The canvas's look, with the person's settings, and still stars when the system asks for less motion.
+        CanvasLook.reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        CanvasLook.start()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { CanvasLook.reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+        }
     }
 
     var body: some Scene {
@@ -40,6 +49,7 @@ struct SynesthesiaApp: App {
                 Toggle("Show Simulated Host", isOn: $showsSimulatedHost)
                 Toggle("Show Meeplang", isOn: Binding(get: { model.workspace.showsText }, set: { model.workspace.showsText = $0 }))
                     .keyboardShortcut("t", modifiers: [.command, .option])
+                Toggle("Show Starfield", isOn: $showsStarfield)
                 Divider()
                 ZoomCommands()
             }
@@ -53,6 +63,10 @@ struct SynesthesiaApp: App {
                 }
                 .help("Copies the command that adds Synesthesia's MCP server to Claude Code, to paste in a terminal.")
             }
+        }
+
+        Settings {
+            CanvasSettingsView()
         }
     }
 }

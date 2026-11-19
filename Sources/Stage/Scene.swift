@@ -17,7 +17,7 @@ extension StageColor {
 }
 
 /// A tile's outline, from what its verb does (the theme notes in the design).
-public enum TileShape: Int32, Sendable, CaseIterable {
+public enum TileShape: Int32, Sendable, CaseIterable, Codable {
     /// Rounded rectangle, the default.
     case rectangle = 0
     /// A true source, which makes messages itself.
@@ -192,8 +192,8 @@ public struct StageParticle: Sendable, Equatable {
 }
 
 /// A font for the stage's text, from the system's.
-public struct StageFont: Sendable, Hashable {
-    public enum Weight: Sendable, Hashable { case regular, medium, semibold }
+public struct StageFont: Sendable, Hashable, Codable {
+    public enum Weight: String, Sendable, Hashable, Codable { case regular, medium, semibold }
 
     public var size: CGFloat
     public var weight: Weight
@@ -238,9 +238,18 @@ public struct StageSnapshot: Sendable {
     public var overParticles: [StageParticle] = []
     public var texts: [StageText] = []
     public var camera = Camera()
-    public var background = Theme.background
+    /// The look to draw everything with.
+    public var theme = Theme.standard
     /// Seconds on the stage's clock, for anything the renderer animates itself.
     public var time: Double = 0
+    /// How far the starfield has travelled, in star lifetimes; its fractional part is all that matters.
+    public var starTravel: Double = 0
+    /// How fast it's travelling now, in star lifetimes a second, for the streaks of near stars.
+    public var starSpeed: Double = 0
+    /// How much of the starfield shows, from 0 to 1, as it fades in or out when switched on or off.
+    public var starOpacity: Float = 0
+
+    public var background: StageColor { theme.canvas.background }
 
     public init() {}
 }

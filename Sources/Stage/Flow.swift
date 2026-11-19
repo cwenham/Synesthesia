@@ -95,12 +95,13 @@ public struct Flow: Sendable {
 
     /// The flow's particles on `path`: a stream while it shows the rate, and the single particles still travelling.
     public func draw(
-        on path: StageWire, rate: Double, at time: Double, color: StageColor, fading: Bool = false
+        on path: StageWire, rate: Double, at time: Double, color: StageColor, sizes: Theme.Particles = Theme.standard.particles,
+        fading: Bool = false
     ) -> (stream: ParticleStream?, particles: [StageParticle]) {
         var stream: ParticleStream?
         if showsRate, path.length > 0 {
             stream = ParticleStream(
-                path: path, spacing: Self.spacing(for: rate), phase: phase, color: color, size: 1.7,
+                path: path, spacing: Self.spacing(for: rate), phase: phase, color: color, size: sizes.streamSize,
                 style: fading ? .fading : .rate
             )
         }
@@ -110,7 +111,7 @@ public struct Flow: Sendable {
             let place = path.point(at: along)
             var tint = color
             if fading { tint.w *= Float(max(0, 1 - along / max(path.length, 1))) }
-            return StageParticle(position: place.point, direction: place.direction, color: tint, size: 2.6, style: .message, owner: path.id)
+            return StageParticle(position: place.point, direction: place.direction, color: tint, size: sizes.messageSize, style: .message, owner: path.id)
         }
         return (stream, particles)
     }

@@ -29,10 +29,40 @@ struct StageRendererTests {
         #expect(renderer.lastCounts.tiles == snapshot.tiles.count)
         #expect(renderer.lastCounts.glyphs > 50, "labels are drawn")
         #expect(renderer.lastCounts.particles + renderer.lastCounts.streamed > 0, "particles are drawn")
-        // The background is off-black, and the tiles' outlines bright.
+        // The background is off-black, but for a few stars, and the tiles' outlines bright.
         let pixels = try #require(Pixels(image))
         #expect(pixels.brightest > 0.7)
-        #expect(pixels.at(x: 4, y: 4).max()! < 0.12)
+        let corner = (0..<40).flatMap { y in (0..<40).map { x in pixels.at(x: x, y: y).max()! } }
+        #expect(corner.filter { $0 < 0.12 }.count > corner.count * 9 / 10)
+    }
+
+    @Test func theStarfieldShowsWhenOnAndNotWhenOff() throws {
+        let renderer = try #require(StageRenderer())
+        let size = CGSize(width: 600, height: 400)
+        var snapshot = StageSnapshot()
+        snapshot.starTravel = 0.37
+        snapshot.starSpeed = Theme.standard.starfield.speed
+        snapshot.starOpacity = 1
+        let on = try #require(pixels(renderer, snapshot, size: size, saveAs: "starfield"))
+        snapshot.starOpacity = 0
+        let off = try #require(pixels(renderer, snapshot, size: size))
+        // Brighter than the grid's dots: only stars.
+        #expect(on.count { $0 > 0.25 } > 20)
+        #expect(off.count { $0 > 0.25 } == 0)
+    }
+
+    @Test func aFlatShadowAndOtherTileLooksComeFromTheTheme() async throws {
+        let renderer = try #require(StageRenderer())
+        let (stage, session) = try await running("orders", seconds: 0.3)
+        defer { session.stop() }
+        var snapshot = stage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: size)
+        snapshot.starOpacity = 0
+        let standard = try #require(pixels(renderer, snapshot, size: size))
+        snapshot.theme.tiles.shadow.hatchSpacing = 0
+        snapshot.theme.tiles.shadow.flatOpacity = 0.6
+        snapshot.theme.tiles.shadow.offset = CGVector(dx: 14, dy: 14)
+        let flat = try #require(pixels(renderer, snapshot, size: size, saveAs: "orders-flat-shadows"))
+        #expect(standard.bytes != flat.bytes)
     }
 
     @Test func zoomedInTextStaysSharp() async throws {
@@ -79,6 +109,12 @@ struct StageRendererTests {
         return (stage, session)
     }
 
+    private func pixels(_ renderer: StageRenderer, _ snapshot: StageSnapshot, size: CGSize, saveAs name: String? = nil) -> Pixels? {
+        guard let image = renderer.image(of: snapshot, size: size) else { return nil }
+        if let name { save(image, as: name) }
+        return Pixels(image)
+    }
+
     private func save(_ image: CGImage, as name: String) {
         guard let folder = ProcessInfo.processInfo.environment["SYNESTHESIA_SNAPSHOTS"] else { return }
         let url = URL(fileURLWithPath: folder).appendingPathComponent("\(name).png")
@@ -115,7 +151,12 @@ struct Pixels {
         return (0..<3).map { Double(bytes[index + $0]) / 255 }
     }
 
-    var brightest: Double {
+    /// How many pixels' brightest channel passes `test`.
+    func count(where test: (Double) -> Bool) -> Int {
+        stride(from: 0, to: bytes.count, by: 4).filter { test(Double(max(bytes[$0], bytes[$0 + 1], bytes[$0 + 2])) / 255) }.count
+    }
+
+        var brightest: Double {
         stride(from: 0, to: bytes.count, by: 4).map { Double(max(bytes[$0], bytes[$0 + 1], bytes[$0 + 2])) / 255 }.max() ?? 0
     }
 }

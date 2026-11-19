@@ -98,11 +98,11 @@ struct PipelineStageTests {
         #expect(readings.spacing < Flow.spacing(for: 10))
         // Classify fails about 24 a second, and its errors go to Rejects in red.
         let rejects = stage.link("m2>m4")?.live
-        #expect(snapshot.streams.contains { $0.path.id == "m2>m4" && $0.color == Theme.error },
+        #expect(snapshot.streams.contains { $0.path.id == "m2>m4" && $0.color == Theme.standard.colors.error },
                 "errors at \(rejects?.errorRate ?? -1)/s, \(rejects?.errors ?? -1) so far")
         // Alerts drops some: they spill off its tile.
         #expect(snapshot.overStreams.contains { $0.path.id == "m3.dropped" }
-            || snapshot.overParticles.contains { $0.color.x == Theme.dropped.x })
+            || snapshot.overParticles.contains { $0.color.x == Theme.standard.colors.dropped.x })
     }
 
     @Test func aHostThatCantBeReachedIsDrawnGreyWithoutParticles() async throws {
@@ -261,7 +261,7 @@ struct CameraTests {
 struct GeometryTests {
     @Test(arguments: TileShape.allCases)
     func edgesMeetTheOutlineAtTheMiddle(shape: TileShape) {
-        let size = Theme.tileSize(for: shape)
+        let size = Theme.standard.tiles.size(for: shape)
         let right = shape.rightEdge(atY: 0, size: size)
         let left = shape.leftEdge(atY: 0, size: size)
         #expect(right > 0 && left < 0)
@@ -290,12 +290,12 @@ struct GeometryTests {
 struct TextTests {
     @Test func labelsAreMeasuredAndCutShort() {
         let shaper = TextShaper.shared
-        let width = shaper.width(of: "WriteLine #6", font: Theme.titleFont)
+        let width = shaper.width(of: "WriteLine #6", font: Theme.standard.labels.titleFont)
         #expect(width > 50 && width < 120)
         #expect(shaper.width(of: "W", font: StageFont(size: 26)) > shaper.width(of: "W", font: StageFont(size: 13)) * 1.9)
-        let cut = shaper.truncated("a parameter far too long to show under a tile", font: Theme.detailFont, width: 120)
-        #expect(cut.hasSuffix("…") && shaper.width(of: cut, font: Theme.detailFont) <= 120)
-        #expect(shaper.truncated("short", font: Theme.detailFont, width: 120) == "short")
+        let cut = shaper.truncated("a parameter far too long to show under a tile", font: Theme.standard.labels.detailFont, width: 120)
+        #expect(cut.hasSuffix("…") && shaper.width(of: cut, font: Theme.standard.labels.detailFont) <= 120)
+        #expect(shaper.truncated("short", font: Theme.standard.labels.detailFont, width: 120) == "short")
     }
 
     @Test func boldIsBold() {
@@ -328,8 +328,8 @@ struct ProposalTests {
         #expect(stage.module(graph.modules[1].key)?.isChanged == true)
         #expect(stage.module(graph.modules[0].key)?.isChanged == false)
         let gate = try #require(snapshot.tiles.first { $0.id == "m99" })
-        #expect(gate.isGhost && gate.color == Theme.proposed)
-        #expect(snapshot.tiles.first { $0.id == removed.key }?.color == Theme.error)
+        #expect(gate.isGhost && gate.color == Theme.standard.colors.proposed)
+        #expect(snapshot.tiles.first { $0.id == removed.key }?.color == Theme.standard.colors.error)
         #expect(snapshot.texts.contains { $0.tile == "m99" && $0.string == "proposed" })
         #expect(snapshot.texts.contains { $0.tile == removed.key && $0.string == "to be removed" })
         #expect(stage.link("\(graph.modules[0].key)>m99")?.isProposed == true)
@@ -442,5 +442,65 @@ enum BranchDescendants {
             for module in graph.modules where module.under == next && found.insert(module.key).inserted { frontier.append(module.key) }
         }
         return found
+    }
+}
+
+@MainActor
+struct ThemeTests {
+    let size = CGSize(width: 1200, height: 700)
+
+    @Test func aThemeSurvivesJSON() throws {
+        var theme = Theme.standard
+        theme.name = "Copy"
+        theme.roles.filter.shape = .circle
+        theme.tiles.shadow.offset = CGVector(dx: -3, dy: 9)
+        let data = try JSONEncoder().encode(theme)
+        #expect(try JSONDecoder().decode(Theme.self, from: data) == theme)
+    }
+
+    @Test func theStageDrawsWithTheCurrentThemeAndLaysOutAgainWhenTilesChange() async throws {
+        let (pipeline, host, session) = try await simulated("orders")
+        defer { session.stop() }
+        let stage = PipelineStage(pipeline: pipeline, host: host)
+        // No awaits from here, so no other test sees the theme changed.
+        let before = stage.frame(at: 1, viewSize: size)
+        let wide = before.tiles.first { $0.shape == .rectangle }!.frame.width
+        var theme = Theme.standard
+        theme.tiles.rectangleWidth = 160
+        theme.roles.step.color = StageColor(hex: 0x123456)
+        Theme.current = theme
+        defer { Theme.current = .standard }
+        let after = stage.frame(at: 1.1, viewSize: size)
+        let tile = after.tiles.first { $0.shape == .rectangle }!
+        #expect(after.theme == theme)
+        #expect(tile.frame.width == 160 && wide == Theme.standard.tiles.rectangleWidth)
+        #expect(tile.color == StageColor(hex: 0x123456))
+    }
+
+    @Test func theStarfieldFadesInEasesUpToSpeedAndFadesOut() async throws {
+        let (pipeline, host, session) = try await simulated("orders")
+        defer { session.stop() }
+        let stage = PipelineStage(pipeline: pipeline, host: host)
+        var time = 10.0
+        var snapshot = stage.frame(at: time, viewSize: size)
+        #expect(snapshot.starOpacity == 0 && snapshot.starSpeed == 0, "it starts still and unseen")
+        for _ in 0..<240 {
+            time += 1.0 / 60
+            snapshot = stage.frame(at: time, viewSize: size)
+        }
+        let speed = Theme.standard.starfield.speed
+        #expect(snapshot.starOpacity > 0.99)
+        #expect(abs(snapshot.starSpeed - speed) < speed * 0.01)
+        #expect(snapshot.starTravel > 0)
+
+        var off = Theme.standard
+        off.starfield.isOn = false
+        Theme.current = off
+        defer { Theme.current = .standard }
+        for _ in 0..<240 {
+            time += 1.0 / 60
+            snapshot = stage.frame(at: time, viewSize: size)
+        }
+        #expect(snapshot.starOpacity == 0)
     }
 }

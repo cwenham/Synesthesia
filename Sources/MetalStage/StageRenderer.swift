@@ -6,8 +6,8 @@ import QuartzCore
 import Stage
 import simd
 
-/// Draws a ``StageSnapshot`` with Metal: the background grid, tiles' shadows, wires, particles, tiles and text, each
-/// as one instanced draw. The same renderer serves the Mac and the iPad; the platform supplies the drawable.
+/// Draws a ``StageSnapshot`` with Metal: the background with its starfield and grid, tiles' shadows, wires, particles,
+/// tiles and text, each as one instanced draw, in the look of the snapshot's ``Theme``. The same renderer serves the Mac and the iPad; the platform supplies the drawable.
 @MainActor
 public final class StageRenderer {
     public let device: MTLDevice
@@ -88,16 +88,18 @@ public final class StageRenderer {
             scale: Float(snapshot.camera.scale), pixelScale: Float(pixelScale), time: Float(snapshot.time.truncatingRemainder(dividingBy: 10_000)), count: 0
         )
         var counts = Counts()
+        let theme = snapshot.theme
 
-        // The background and its grid.
-        var colors = BackgroundColors(background: snapshot.background, grid: Theme.grid)
+        // The background, its starfield and its grid.
+        var backgroundLook = BackgroundLook(snapshot)
         encoder.setRenderPipelineState(background)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        encoder.setFragmentBytes(&colors, length: MemoryLayout<BackgroundColors>.stride, index: 1)
+        encoder.setFragmentBytes(&backgroundLook, length: MemoryLayout<BackgroundLook>.stride, index: 1)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
 
-        let tileData = snapshot.tiles.map(TileInstance.init)
+        var tileLook = TileLook(theme)
+        let tileData = snapshot.tiles.map { TileInstance($0, depth: theme.tiles.depth) }
         counts.tiles = tileData.count
         let tileBuffer = buffer(tileData)
 
@@ -105,14 +107,16 @@ public final class StageRenderer {
         if let tileBuffer {
             encoder.setRenderPipelineState(shadows)
             bind(encoder, uniforms: &uniforms, buffer: tileBuffer)
+            encoder.setVertexBytes(&tileLook, length: MemoryLayout<TileLook>.stride, index: 3)
+            encoder.setFragmentBytes(&tileLook, length: MemoryLayout<TileLook>.stride, index: 3)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: tileData.count)
         }
 
         // Wires.
         var segments: [SegmentInstance] = []
         for wire in snapshot.wires {
-            let width: Float = wire.isHovered ? 2.8 : 1.6
-            let color = wire.isHovered ? wire.color.mixed(with: StageColor(1, 1, 1, 1), by: 0.35) : wire.color
+            let width = wire.isHovered ? theme.wires.hoveredWidth : theme.wires.width
+            let color = wire.isHovered ? wire.color.mixed(with: theme.colors.highlight, by: theme.wires.hoverLighten) : wire.color
             for index in 0..<max(wire.points.count - 1, 0) {
                 segments.append(SegmentInstance(
                     color: color, a: point(wire.points[index]), b: point(wire.points[index + 1]), width: width,
@@ -122,8 +126,10 @@ public final class StageRenderer {
         }
         counts.segments = segments.count
         if let segmentBuffer = buffer(segments) {
+            var dashes = SIMD2(theme.wires.dashLength, theme.wires.dashDuty)
             encoder.setRenderPipelineState(wires)
             bind(encoder, uniforms: &uniforms, buffer: segmentBuffer)
+            encoder.setFragmentBytes(&dashes, length: MemoryLayout<SIMD2<Float>>.stride, index: 2)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: segments.count)
         }
 
@@ -135,6 +141,8 @@ public final class StageRenderer {
             encoder.setRenderPipelineState(tiles)
             bind(encoder, uniforms: &uniforms, buffer: tileBuffer)
             encoder.setFragmentBytes(&backgroundColor, length: MemoryLayout<StageColor>.stride, index: 2)
+            encoder.setVertexBytes(&tileLook, length: MemoryLayout<TileLook>.stride, index: 3)
+            encoder.setFragmentBytes(&tileLook, length: MemoryLayout<TileLook>.stride, index: 3)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: tileData.count)
         }
         counts.streamed += drawStreams(snapshot.overStreams, encoder: encoder, uniforms: &uniforms)
@@ -280,9 +288,114 @@ struct Uniforms {
     var count: Int32
 }
 
-struct BackgroundColors {
+/// The background's look, with the starfield's state this frame.
+struct BackgroundLook {
     var background: SIMD4<Float>
     var grid: SIMD4<Float>
+    var starColor: SIMD4<Float>
+    var starTint: SIMD4<Float>
+    var gridSpacing: Float
+    var coarseGridSpacing: Float
+    var gridDotRadius: Float
+    var starOpacity: Float
+    var starTravel: Float
+    var starSpeed: Float
+    var starDensity: Float
+    var starCellSize: Float
+    var starSize: Float
+    var starBrightness: Float
+    var starStreak: Float
+    var starParallax: Float
+    var starLayers: Int32
+    var padding0: Float = 0
+    var padding1: Float = 0
+    var padding2: Float = 0
+
+    init(_ snapshot: StageSnapshot) {
+        let canvas = snapshot.theme.canvas
+        let stars = snapshot.theme.starfield
+        background = canvas.background
+        grid = canvas.grid
+        starColor = stars.color
+        starTint = stars.tint
+        gridSpacing = Float(canvas.gridSpacing)
+        coarseGridSpacing = Float(canvas.coarseGridSpacing)
+        gridDotRadius = Float(canvas.gridDotRadius)
+        starOpacity = min(max(snapshot.starOpacity, 0), 1)
+        starTravel = Float(snapshot.starTravel.truncatingRemainder(dividingBy: 100))
+        starSpeed = Float(snapshot.starSpeed)
+        starDensity = stars.density
+        starCellSize = max(stars.cellSize, 4)
+        starSize = stars.starSize
+        starBrightness = stars.brightness
+        starStreak = stars.streak
+        starParallax = stars.parallax
+        starLayers = Int32(min(max(stars.layers, 1), 12))
+    }
+}
+
+/// The tiles' look from the theme, shared by every tile.
+struct TileLook {
+    var flashColor: SIMD4<Float>
+    var shadowOffset: SIMD2<Float>
+    var cornerRadius: Float
+    var triangleCornerRadius: Float
+    var outlineWidth: Float
+    var selectedOutlineScale: Float
+    var faceLift: Float
+    var faceTint: Float
+    var sideShade: Float
+    var sideTint: Float
+    var sideOutlineOpacity: Float
+    var edgeOpacity: Float
+    var bevelInset: Float
+    var bevelOpacity: Float
+    var hoverGlow: Float
+    var selectedGlow: Float
+    var flashGlow: Float
+    var glowReach: Float
+    var ghostFaceOpacity: Float
+    var ghostDashLength: Float
+    var ghostDashDuty: Float
+    var hatchSpacing: Float
+    var hatchOpacity: Float
+    var flatOpacity: Float
+    /// How far past the tile its quad reaches, for the shadow and glow.
+    var margin: Float
+    var flashFaceTint: Float
+    var padding0: Float = 0
+    var padding1: Float = 0
+
+    init(_ theme: Theme) {
+        let tiles = theme.tiles
+        let shadow = tiles.shadow
+        flashColor = theme.colors.error
+        shadowOffset = SIMD2(Float(shadow.offset.dx), Float(shadow.offset.dy))
+        cornerRadius = tiles.cornerRadius
+        triangleCornerRadius = tiles.triangleCornerRadius
+        outlineWidth = tiles.outlineWidth
+        selectedOutlineScale = tiles.selectedOutlineScale
+        faceLift = tiles.faceLift
+        faceTint = tiles.faceTint
+        sideShade = tiles.sideShade
+        sideTint = tiles.sideTint
+        sideOutlineOpacity = tiles.sideOutlineOpacity
+        edgeOpacity = tiles.edgeOpacity
+        bevelInset = tiles.bevelInset
+        bevelOpacity = tiles.bevelOpacity
+        hoverGlow = tiles.hoverGlow
+        selectedGlow = tiles.selectedGlow
+        flashGlow = tiles.flashGlow
+        glowReach = tiles.glowReach
+        ghostFaceOpacity = tiles.ghostFaceOpacity
+        ghostDashLength = max(tiles.ghostDashLength, 0.5)
+        ghostDashDuty = tiles.ghostDashDuty
+        hatchSpacing = shadow.hatchSpacing
+        hatchOpacity = shadow.hatchOpacity
+        flatOpacity = shadow.flatOpacity
+        margin = max(abs(shadowOffset.x), abs(shadowOffset.y)) + tiles.glowReach * 2.2 + 2
+        flashFaceTint = tiles.flashFaceTint
+    }
 }
 
 struct TileInstance {
@@ -294,14 +407,14 @@ struct TileInstance {
     var flags: Int32
     var depth: Float
 
-    init(_ tile: StageTile) {
+    init(_ tile: StageTile, depth: CGFloat) {
         color = tile.color
         center = SIMD2(Float(tile.frame.midX), Float(tile.frame.midY))
         halfSize = SIMD2(Float(tile.frame.width / 2), Float(tile.frame.height / 2))
         flash = tile.flash
         shape = tile.shape.rawValue
         flags = (tile.isHovered ? 1 : 0) | (tile.isSelected ? 2 : 0) | (tile.isDimmed ? 4 : 0) | (tile.isGhost ? 8 : 0)
-        depth = Float(Theme.tileDepth)
+        self.depth = Float(depth)
     }
 }
 

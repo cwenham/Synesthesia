@@ -212,6 +212,13 @@ public final class PipelineStage {
     @ObservationIgnored private var viewSize: CGSize = .zero
     @ObservationIgnored private var time: Double = 0
 
+    /// The look it draws with: ``Theme/current``, taken at the start of each frame.
+    @ObservationIgnored public private(set) var theme = Theme.current
+    /// The starfield's speed now, eased toward the theme's; how far it has travelled; and how much of it shows.
+    @ObservationIgnored private var starSpeed: Double = 0
+    @ObservationIgnored private var starTravel: Double = 0
+    @ObservationIgnored private var starOpacity: Float = 0
+
     @ObservationIgnored private var wireFlows: [String: WireFlows] = [:]
     @ObservationIgnored private var tileFlows: [String: TileFlows] = [:]
 
@@ -255,6 +262,8 @@ public final class PipelineStage {
     public func frame(at time: Double, viewSize size: CGSize) -> StageSnapshot {
         let elapsed = self.time == 0 ? 0 : min(max(time - self.time, 0), 0.1)
         self.time = time
+        adopt(Theme.current)
+        advanceStars(by: elapsed)
         rebuildShown()
         if size != viewSize {
             viewSize = size
@@ -273,6 +282,10 @@ public final class PipelineStage {
         var snapshot = StageSnapshot()
         snapshot.camera = camera
         snapshot.time = time
+        snapshot.theme = theme
+        snapshot.starTravel = starTravel
+        snapshot.starOpacity = starOpacity
+        snapshot.starSpeed = starSpeed
         let current = isCurrent
         let progress = moving.map { CGFloat($0.progress(at: time)) } ?? 1
         if let moving, moving.isDone(at: time) {
@@ -301,11 +314,11 @@ public final class PipelineStage {
             guard var wire = wires[link.key] else { continue }
             wire.isHovered = hovered == .wire(link.key) || dropTarget == .wire(link.key) || litPath.contains(link.key)
             if link.isProposed {
-                wire.color = Theme.proposed.with(alpha: 0.6)
+                wire.color = theme.colors.proposed.with(alpha: 0.6)
             } else if link.isRemoved {
-                wire.color = Theme.error.with(alpha: 0.45)
+                wire.color = theme.colors.error.with(alpha: 0.45)
             } else if !current || link.isNew {
-                wire.color = Theme.dimmed.with(alpha: link.isNew ? 0.45 : 0.6)
+                wire.color = theme.colors.dimmed.with(alpha: link.isNew ? 0.45 : 0.6)
             }
             snapshot.wires.append(wire)
         }
@@ -325,8 +338,8 @@ public final class PipelineStage {
             }
             flows.messages.advance(to: time, by: elapsed, rate: counts.messageRate, length: wire.length)
             flows.errors.advance(to: time, by: elapsed, rate: counts.errorRate, length: wire.length)
-            add(flows.messages.draw(on: wire, rate: counts.messageRate, at: time, color: color), to: &snapshot, over: false)
-            add(flows.errors.draw(on: wire, rate: counts.errorRate, at: time, color: Theme.error), to: &snapshot, over: false)
+            add(flows.messages.draw(on: wire, rate: counts.messageRate, at: time, color: color, sizes: theme.particles), to: &snapshot, over: false)
+            add(flows.errors.draw(on: wire, rate: counts.errorRate, at: time, color: theme.colors.error, sizes: theme.particles), to: &snapshot, over: false)
             wireFlows[link.key] = flows
         }
 
@@ -339,7 +352,7 @@ public final class PipelineStage {
             let failures = module.counts.failed + module.counts.refused
             if current, let before = flows.failures, failures > before { flows.flashed = time }
             flows.failures = failures
-            let flash = Float(max(0, 1 - (time - flows.flashed) / 0.7))
+            let flash = Float(max(0, 1 - (time - flows.flashed) / theme.tiles.flashSeconds))
 
             let center = CGPoint(x: face.midX, y: face.midY)
             let inlet = CGPoint(x: center.x + tile.shape.leftEdge(atY: 0, size: tile.size) + 2, y: center.y)
@@ -348,23 +361,23 @@ public final class PipelineStage {
                 drawTileFlow(&flows.heldBack, count: module.counts.heldBack, rate: module.rate(.heldBack), path: path,
                              color: tile.color, current: current, elapsed: elapsed, into: &snapshot)
             }
-            let bottom = CGPoint(x: center.x + 6, y: face.maxY + Theme.tileDepth - 2)
+            let bottom = CGPoint(x: center.x + 6, y: face.maxY + theme.tiles.depth - 2)
             let spill = StageWire(id: "\(key).dropped", kind: .main, points: WireRouter.route(
                 from: bottom, to: CGPoint(x: bottom.x + 26, y: bottom.y + 34), through: []), color: .zero)
             drawTileFlow(&flows.dropped, count: module.counts.dropped, rate: module.rate(.dropped), path: spill,
-                         color: Theme.dropped, current: current, elapsed: elapsed, into: &snapshot)
+                         color: theme.colors.dropped, current: current, elapsed: elapsed, into: &snapshot)
             let top = CGPoint(x: center.x - 8, y: face.minY + 4)
             let rise = StageWire(id: "\(key).expired", kind: .main, points: [top, CGPoint(x: top.x - 6, y: top.y - 30)], color: .zero)
             drawTileFlow(&flows.expired, count: module.counts.expired, rate: module.rate(.expired), path: rise,
-                         color: Theme.expired, current: current, elapsed: elapsed, into: &snapshot)
+                         color: theme.colors.expired, current: current, elapsed: elapsed, into: &snapshot)
             tileFlows[key] = flows
 
             if module.counts.queued > 0 {
                 pile(module.counts.queued, at: inlet, color: tile.color.with(alpha: current ? 0.9 : 0.4), owner: "\(key).queued", into: &snapshot)
             }
 
-            let color = module.isRemoved ? Theme.error : module.isProposed ? Theme.proposed : module.isBeingEdited ? Theme.editing
-                : current ? tile.color : Theme.dimmed.mixed(with: tile.color, by: 0.25)
+            let color = module.isRemoved ? theme.colors.error : module.isProposed ? theme.colors.proposed : module.isBeingEdited ? theme.colors.editing
+                : current ? tile.color : theme.colors.dimmed.mixed(with: tile.color, by: 0.25)
             let ghost = module.isNew || module.isBeingEdited || module.isProposed || module.isRemoved
             snapshot.tiles.append(StageTile(
                 id: key, shape: tile.shape, frame: face, color: color, flash: current ? flash : 0,
@@ -376,6 +389,28 @@ public final class PipelineStage {
         }
         drawDraggedTile(into: &snapshot)
         return snapshot
+    }
+
+    // MARK: Theme
+
+    /// Draws with `new` from now on, laying the pipeline out again if its tiles or labels change size or shape.
+    private func adopt(_ new: Theme) {
+        guard new != theme else { return }
+        let relayout = new.layoutMetrics != theme.layoutMetrics || new.roles != theme.roles
+        theme = new
+        if relayout { signature = "" }
+        wiresNeedRouting = true
+    }
+
+    /// Moves the starfield on by `elapsed` seconds. Changes of speed ease in over about a second, and switching it on
+    /// or off fades it, so neither jumps.
+    private func advanceStars(by elapsed: Double) {
+        let field = theme.starfield
+        starSpeed += (field.speed - starSpeed) * (1 - exp(-elapsed * 3))
+        // Kept small, so the renderer's single-precision copy stays exact; the shader repeats every 100.
+        starTravel = (starTravel + starSpeed * elapsed).truncatingRemainder(dividingBy: 100)
+        starOpacity += ((field.isOn ? 1 : 0) - starOpacity) * Float(1 - exp(-elapsed * 4))
+        if !field.isOn, starOpacity < 0.002 { starOpacity = 0 }
     }
 
     // MARK: Layout
@@ -391,22 +426,22 @@ public final class PipelineStage {
         var nodes: [LayoutGraph.Node] = []
         var made: [String: PlacedTile] = [:]
         for module in shownModules {
-            let shape = Theme.shape(for: module.role)
-            let size = Theme.tileSize(for: shape)
-            let title = shaper.truncated(module.label, font: Theme.titleFont, width: 180)
-            let detail = shaper.truncated(detailText(for: module), font: Theme.detailFont, width: 180)
-            let labelWidth = max(shaper.width(of: title, font: Theme.titleFont), shaper.width(of: detail, font: Theme.detailFont), 64)
-            let nodeSize = CGSize(width: max(size.width, labelWidth), height: Theme.tileHeight + Theme.tileDepth + Theme.labelHeight)
+            let shape = theme.roles[module.role].shape
+            let size = theme.tiles.size(for: shape)
+            let title = shaper.truncated(module.label, font: theme.labels.titleFont, width: theme.labels.maxWidth)
+            let detail = shaper.truncated(detailText(for: module), font: theme.labels.detailFont, width: theme.labels.maxWidth)
+            let labelWidth = max(shaper.width(of: title, font: theme.labels.titleFont), shaper.width(of: detail, font: theme.labels.detailFont), theme.labels.minWidth)
+            let nodeSize = CGSize(width: max(size.width, labelWidth), height: theme.tiles.height + theme.tiles.depth + theme.labels.height)
             nodes.append(LayoutGraph.Node(id: module.key, size: nodeSize))
             made[module.key] = PlacedTile(
                 shape: shape, size: size, frame: CGRect(origin: .zero, size: nodeSize), from: nil,
-                color: Theme.color(for: module.role), title: title, detail: detail
+                color: theme.roles[module.role].color, title: title, detail: detail
             )
         }
         let edges = shownLinks.map { LayoutGraph.Edge(id: $0.key, from: $0.from, to: $0.to, input: $0.input) }
         var layout = LayeredLayout()
         layout.columnAlignment = .leading
-        layout.inputSpan = Theme.inputSpan
+        layout.inputSpan = theme.tiles.inputSpan
         // Earlier places as hints, by the middle of each tile.
         let previous = tiles.mapValues { CGPoint(x: $0.frame.midX, y: $0.frame.midY) }
         let result = layout.layout(LayoutGraph(nodes: nodes, edges: edges), previous: previous)
@@ -456,13 +491,13 @@ public final class PipelineStage {
             guard let fromFace = faces[link.from], let toFace = faces[link.to],
                   let fromTile = tiles[link.from], let toTile = tiles[link.to] else { continue }
             let inputs = shownLinks.filter { $0.to == link.to }.map(\.input).max() ?? 1
-            let offset = LayeredLayout.inputOffset(input: link.input, of: inputs, span: Theme.inputSpan, spacing: 14)
+            let offset = LayeredLayout.inputOffset(input: link.input, of: inputs, span: theme.tiles.inputSpan, spacing: theme.tiles.inputSpacing)
             // Ends just inside the shapes, under the tiles, so no gap shows.
             let start = CGPoint(x: fromFace.midX + fromTile.shape.rightEdge(atY: 0, size: fromTile.size) - 3, y: fromFace.midY)
             let end = CGPoint(x: toFace.midX + toTile.shape.leftEdge(atY: offset, size: toTile.size) + 3, y: toFace.midY + offset)
             var through = bends[link.key] ?? []
             // Bends from the layout are where the tiles' nodes' middles go; tiles sit at their top, so shift them up.
-            let shift = (Theme.tileHeight + Theme.tileDepth + Theme.labelHeight) / 2 - Theme.tileHeight / 2
+            let shift = (theme.tiles.height + theme.tiles.depth + theme.labels.height) / 2 - theme.tiles.height / 2
             through = through.map { CGPoint(x: $0.x, y: $0.y - shift) }
             if progress < 1, let old = oldBends[link.key], old.count == through.count {
                 through = zip(old, through).map { o, n in
@@ -473,7 +508,7 @@ public final class PipelineStage {
             let kind: StageWire.Kind = backward.contains(link.key) ? .backward : (link.port == .errors ? .errors : .main)
             routed[link.key] = StageWire(
                 id: link.key, kind: kind, points: WireRouter.route(from: start, to: end, through: through),
-                color: kind == .errors ? Theme.errorWire : Theme.wire
+                color: kind == .errors ? theme.wires.errorColor : theme.wires.color
             )
         }
         wires = routed
@@ -504,8 +539,8 @@ public final class PipelineStage {
     }
 
     private func particleColor(from key: String) -> StageColor {
-        let base = tiles[key]?.color ?? Theme.title
-        return base.mixed(with: StageColor(1, 1, 1, 1), by: 0.35)
+        let base = tiles[key]?.color ?? theme.colors.title
+        return base.mixed(with: theme.colors.highlight, by: theme.particles.lighten)
     }
 
     private func drawTileFlow(
@@ -514,7 +549,7 @@ public final class PipelineStage {
     ) {
         if current { flow.observe(count, rate: rate, at: time) } else { flow.stop() }
         flow.advance(to: time, by: elapsed, rate: rate, length: path.length)
-        add(flow.draw(on: path, rate: rate, at: time, color: color, fading: true), to: &snapshot, over: true)
+        add(flow.draw(on: path, rate: rate, at: time, color: color, sizes: theme.particles, fading: true), to: &snapshot, over: true)
     }
 
     private func add(_ drawn: (stream: ParticleStream?, particles: [StageParticle]), to snapshot: inout StageSnapshot, over: Bool) {
@@ -536,7 +571,7 @@ public final class PipelineStage {
             let column = index % perRow
             let x = inlet.x - 9 - CGFloat(column) * 5.4 - CGFloat(row) * 2.7
             let y = inlet.y - CGFloat(row) * 4.6
-            snapshot.overParticles.append(StageParticle(position: CGPoint(x: x, y: y), color: color, size: 2.1, style: .message, owner: owner))
+            snapshot.overParticles.append(StageParticle(position: CGPoint(x: x, y: y), color: color, size: theme.particles.queuedSize, style: .message, owner: owner))
         }
     }
 
@@ -551,29 +586,29 @@ public final class PipelineStage {
     private func addLabel(for module: StageModule, tile: PlacedTile, face: CGRect, current: Bool, into snapshot: inout StageSnapshot) {
         // Text too small to read isn't drawn.
         let x = face.minX
-        var y = face.maxY + Theme.tileDepth + Theme.labelGap
-        if camera.scale * Theme.titleFont.size >= 4.5 {
-            snapshot.texts.append(StageText(tile.title, at: CGPoint(x: x, y: y), font: Theme.titleFont, color: current ? Theme.title : Theme.detail, tile: module.key))
+        var y = face.maxY + theme.tiles.depth + theme.labels.gap
+        if camera.scale * theme.labels.titleFont.size >= theme.labels.smallestTitle {
+            snapshot.texts.append(StageText(tile.title, at: CGPoint(x: x, y: y), font: theme.labels.titleFont, color: current ? theme.colors.title : theme.colors.detail, tile: module.key))
         }
-        y += Theme.lineHeights[1]
-        guard camera.scale * Theme.detailFont.size >= 5.5 else { return }
-        snapshot.texts.append(StageText(tile.detail, at: CGPoint(x: x, y: y), font: Theme.detailFont, color: Theme.detail, tile: module.key))
-        y += Theme.lineHeights[2]
-        let note: (String, StageColor)? = module.isRemoved ? ("to be removed", Theme.error)
-            : module.isProposed ? ("proposed", Theme.proposed)
-            : module.isChanged ? ("changed", Theme.proposed)
-            : module.isBeingEdited ? ("being edited", Theme.editing)
-            : module.isNew ? ("not running yet", Theme.detail)
+        y += theme.labels.detailLineHeight
+        guard camera.scale * theme.labels.detailFont.size >= theme.labels.smallestDetail else { return }
+        snapshot.texts.append(StageText(tile.detail, at: CGPoint(x: x, y: y), font: theme.labels.detailFont, color: theme.colors.detail, tile: module.key))
+        y += theme.labels.noteLineHeight
+        let note: (String, StageColor)? = module.isRemoved ? ("to be removed", theme.colors.error)
+            : module.isProposed ? ("proposed", theme.colors.proposed)
+            : module.isChanged ? ("changed", theme.colors.proposed)
+            : module.isBeingEdited ? ("being edited", theme.colors.editing)
+            : module.isNew ? ("not running yet", theme.colors.detail)
             : nil
         if let (text, color) = note {
-            snapshot.texts.append(StageText(text, at: CGPoint(x: x, y: y), font: Theme.rateFont, color: color, tile: module.key))
+            snapshot.texts.append(StageText(text, at: CGPoint(x: x, y: y), font: theme.labels.rateFont, color: color, tile: module.key))
             return
         }
         guard current else { return }
         var rate = StageFormat.rate(module.role == .source || module.counts.received == 0 && module.counts.emitted > 0
             ? module.rate(.emitted) : module.rate(.received))
         if module.counts.queued > 0 { rate += ", \(StageFormat.count(module.counts.queued)) queued" }
-        snapshot.texts.append(StageText(rate, at: CGPoint(x: x, y: y), font: Theme.rateFont, color: tile.color, tile: module.key))
+        snapshot.texts.append(StageText(rate, at: CGPoint(x: x, y: y), font: theme.labels.rateFont, color: tile.color, tile: module.key))
     }
 
     // MARK: Pointer and gestures
@@ -586,7 +621,7 @@ public final class PipelineStage {
             let face = CGRect(origin: tile.frame.origin, size: tile.size)
             let local = CGPoint(x: world.x - face.midX, y: world.y - face.midY)
             if tile.shape.contains(local, size: tile.size) { return .tile(key) }
-            let label = CGRect(x: tile.frame.minX, y: face.maxY + Theme.tileDepth, width: tile.frame.width, height: Theme.labelHeight)
+            let label = CGRect(x: tile.frame.minX, y: face.maxY + theme.tiles.depth, width: tile.frame.width, height: theme.labels.height)
             if label.contains(world) { return .tile(key) }
         }
         let reach = 5 / camera.scale + 1
@@ -952,13 +987,9 @@ public final class PipelineStage {
 
     // MARK: Probes and real messages
 
-    /// The probes' colours, distinct from the roles', in the order probes take them.
-    public static let probeColors: [StageColor] = [
-        StageColor(hex: 0xFFFFFF), StageColor(hex: 0xFFE27A), StageColor(hex: 0x9CF0FF), StageColor(hex: 0xFFB0E6), StageColor(hex: 0xB9FFB0),
-    ]
-
+    /// A probe's colour in the current theme, by the order it was opened in.
     public static func color(ofProbe index: Int) -> StageColor {
-        probeColors[((index % probeColors.count) + probeColors.count) % probeColors.count]
+        Theme.current.particles.probeColor(index)
     }
 
     /// How long a real message takes to cross its wire.
@@ -974,7 +1005,7 @@ public final class PipelineStage {
         drawnTracers.removeAll(keepingCapacity: true)
         let now = ProcessInfo.processInfo.systemUptime
         for probe in probes {
-            let color = Self.color(ofProbe: probe.colorIndex)
+            let color = theme.particles.probeColor(probe.colorIndex)
             // The mark: at the module's outlet, or half way along the wire.
             var mark: CGPoint?
             switch probe.target {
@@ -986,7 +1017,7 @@ public final class PipelineStage {
                 if let wire = wires[key] { mark = wire.point(at: wire.length / 2).point }
             }
             if let mark {
-                snapshot.overParticles.append(StageParticle(position: mark, color: color, size: 5.5, style: .tracer, owner: "probe:\(probe.id)"))
+                snapshot.overParticles.append(StageParticle(position: mark, color: color, size: theme.particles.probeMarkSize, style: .tracer, owner: "probe:\(probe.id)"))
                 drawnTracers.append((OpenedMessage(id: 0, probe: probe.id, message: nil), mark))
             }
             // Its messages, each crossing the wires it took.
@@ -997,10 +1028,10 @@ public final class PipelineStage {
             }
             for arrival in recent {
                 let progress = CGFloat((now - arrival.time) / Self.tracerSeconds)
-                let tint = arrival.isError ? Theme.error.mixed(with: color, by: 0.3) : color
+                let tint = arrival.isError ? theme.colors.error.mixed(with: color, by: 0.3) : color
                 for wire in routes where wire.kind != .errors || arrival.isError {
                     let point = wire.point(at: wire.length * min(max(progress, 0), 1)).point
-                    snapshot.overParticles.append(StageParticle(position: point, color: tint, size: 3.6, style: .tracer, owner: "tracer:\(arrival.id)"))
+                    snapshot.overParticles.append(StageParticle(position: point, color: tint, size: theme.particles.tracerSize, style: .tracer, owner: "tracer:\(arrival.id)"))
                     drawnTracers.append((OpenedMessage(id: 0, probe: probe.id, message: arrival.id), point))
                 }
             }
@@ -1013,7 +1044,7 @@ public final class PipelineStage {
             let progress = CGFloat((time - injection.time) / Self.tracerSeconds)
             for wire in into.isEmpty ? out : into {
                 let point = wire.point(at: wire.length * min(max(progress, 0), 1)).point
-                snapshot.overParticles.append(StageParticle(position: point, color: StageColor(1, 1, 1, 1), size: 4.2, style: .tracer, owner: "injected"))
+                snapshot.overParticles.append(StageParticle(position: point, color: theme.particles.injected, size: theme.particles.injectedSize, style: .tracer, owner: "injected"))
             }
         }
     }

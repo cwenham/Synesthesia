@@ -46,7 +46,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         colorPixelFormat = renderer.pixelFormat
         framebufferOnly = true
         preferredFramesPerSecond = 120
-        let background = Theme.background
+        let background = Theme.current.canvas.background
         clearColor = MTLClearColor(red: Double(background.x), green: Double(background.y), blue: Double(background.z), alpha: 1)
         delegate = self
         // Verbs from the palette and messages from probes are dropped here, as text.
