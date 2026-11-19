@@ -118,14 +118,33 @@ Refreshed 17 November 2026 for Synesthesia's step 5, against Meep2 at 810c2fc (b
 
 ## 5. One subscription, digests, host identity
 
-> Synesthesia, the Swift app in `~/Projects/Synesthesia` (design in `docs/Design/architecture-round-1.md` there, sections 4 and 10), shows many hosts' pipelines at once, zooming from one module to the whole network. It asks each daemon only for what's on screen, at a rate that suits its size there, within a byte budget. The daemon needs to support that:
+Refreshed 17 November 2026 for Synesthesia's step 7, against Meep2's `main` at 001842b.
+
+> Synesthesia, the Swift app in `~/Projects/Synesthesia` (design in `docs/Design/architecture-round-1.md` there, sections 2 to 4 and 10; its latest step in `docs/Design/step-6.md`), draws Meep pipelines live. Its next step shows many hosts at once, in one continuous zoom from a module up to a host's districts and the mesh of hosts, and reaches daemons on other machines by forwarding their Unix socket over SSH. It should ask each daemon only for what's on screen, at a rate that suits its size there, within a byte budget for each connection.
 >
-> - **One subscription for each connection** over `/ws`: many pipelines and modules, each at its own rate and with its own fields, changeable without reconnecting, sending only what changed. JSON or CBOR, chosen by the client; `System.Formats.Cbor` is part of .NET, so it adds no dependency.
-> - **Digests:** each module's handling time as a cumulative histogram in OpenTelemetry's exponential form, so clients can merge modules' histograms into pipeline and host totals; bytes in and out for the network inflections (Listen, Fetch, Send); and the host's CPU, memory and garbage collection from .NET's runtime metrics.
-> - **Host identity and time:** a lasting ID for each daemon, made once and kept in `~/.meep/daemon`; the host's names and the addresses its Listens are bound to; and the daemon's clock on every update, so clients can estimate the offset.
-> - **The same identity in OpenTelemetry:** the daemon's ID as a resource attribute (`service.instance.id`), and the pipeline and module on every span and metric, so a collector, or Synesthesia receiving OTLP pushes from hosts it can't reach, can place everything.
+> Today it uses one `/ws` per daemon. It lists the pipelines every two seconds, and opens a stats stream for each live pipeline (`GET /pipelines/{name}/stats?every=…`): once a second, or five times a second while the pipeline is on the canvas. It fetches a graph when a `graph` event says it changed. That's a whole `PipelineDetail` per pipeline per tick, however little changed, and nothing smaller for a pipeline drawn as a dot. Add:
 >
-> Measure the subscription's cost with many modules at high rates. If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
+> - **One subscription for each connection,** over `/ws`, alongside the streams that are there now, which Synesthesia's earlier steps use and should keep working:
+>   - **What it covers:** the pipelines' list and states; totals for a host and for each pipeline; each module's counts; and each link's counts.
+>   - **Its own rate for each,** from a few times a second down to once in several seconds. Nothing is sent for what isn't asked for.
+>   - **Changed in place:** pipelines and modules can be added, dropped or retuned without reconnecting, as the camera moves.
+>   - **Only what changed:** after the first update, each update carries only the counts that changed since the last one sent, with a sequence number, so a client can tell it missed one.
+>   - **Graph notices,** as the stats stream has them now.
+>   - **JSON or CBOR,** chosen by the client. `System.Formats.Cbor` is part of .NET, so it adds no dependency.
+>   - **Measured:** its cost on the daemon and on the wire, with many pipelines and modules at high rates, say 50 pipelines of 20 modules at 10 updates a second, against what the stats streams cost for the same.
+> - **Digests,** in the subscription for whatever asks for them:
+>   - **Handling time:** each module's, as a cumulative histogram in OpenTelemetry's exponential form, so clients can merge modules' histograms into pipeline and host totals at any zoom.
+>   - **Bytes:** in and out, for the network inflections (Listen, Fetch, Send).
+>   - **The host:** its CPU, memory and garbage collection, from .NET's runtime metrics.
+> - **Host identity and time:**
+>   - **A lasting ID** for each daemon, made once and kept in `~/.meep/daemon`.
+>   - **Where it is:** the host's names, and the addresses its Listens are bound to.
+>   - **Its clock** on every update, so a client can estimate the offset between hosts.
+> - **The same identity in OpenTelemetry:** the daemon's ID as a resource attribute (`service.instance.id`), and the pipeline and module on every span and metric. Then a collector, or Synesthesia receiving OTLP pushes from hosts it can't reach (its design's Q5), can place everything.
+>
+> Synesthesia will reach other machines' daemons by forwarding their socket with `ssh -L`, so the daemon sees a connection from its own user through sshd. Say if anything in the peer-credential check or tokens would get in the way of that.
+>
+> If design questions come up, ask them in the numbered style of the design rounds, continuing from 202. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
 
 ## 6. `meep run` joining a daemon
 
