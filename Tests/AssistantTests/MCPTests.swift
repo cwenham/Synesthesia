@@ -45,7 +45,7 @@ actor TestClient {
     }
 }
 
-/// A viewer over a simulated Continuum, with a canvas that opens a stage for the selected pipeline.
+/// A viewer over a simulated Continuum, with a canvas that zooms to what's selected, as the app's does.
 @MainActor
 final class TestViewer: Viewer {
     let continuum = Continuum()
@@ -53,19 +53,25 @@ final class TestViewer: Viewer {
         didSet { openCanvas() }
     }
     private(set) var stage: PipelineStage?
+    let canvasStage: ContinuumStage
+    var canvas: ContinuumStage? { canvasStage }
     var images = 0
     private var session: HostSession?
 
-    init(statsEvery: Duration = .milliseconds(40)) async throws {
+    /// Counts come every 40 ms for every pipeline, or with `slowly`, only totals unless a pipeline is watched.
+    init(slowly: Bool = false) async throws {
+        canvasStage = ContinuumStage(continuum: continuum)
         let host = continuum.add(host: "sim", title: "Simulated", kind: .simulated)
         let link = SimulatedHost(name: "sim", latency: .milliseconds(1))
-        let session = HostSession(host: host, settings: .init(statsEvery: statsEvery, watchedStatsEvery: .milliseconds(40), listEvery: .milliseconds(40))) { link }
+        let settings: HostSession.Settings = slowly ? .init(replanEvery: .milliseconds(50), rateScale: 2)
+            : .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1)
+        let session = HostSession(host: host, settings: settings) { link }
         session.start()
         self.session = session
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(20)
         // Rates need two readings, so wait for them only when counts come quickly.
-        let waitsForRates = statsEvery < .seconds(1)
-        while host.pipeline("orders")?.links.first?.isCounted != true || (waitsForRates && host.pipeline("orders")?.modules.first?.rates[.emitted] == 0) {
+        while slowly ? host.pipeline("orders")?.graph == nil
+            : host.pipeline("orders")?.links.first?.isCounted != true || host.pipeline("orders")?.modules.first?.rates[.emitted] == 0 {
             guard ContinuousClock.now < deadline else { throw CancellationError() }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -73,7 +79,7 @@ final class TestViewer: Viewer {
 
     func stop() { session?.stop() }
 
-    func select(_ address: MeepAddress) { selection = address }
+    func select(_ address: MeepAddress?) { selection = address }
 
     var reveals = 0
     func reveal() { reveals += 1 }
@@ -108,16 +114,18 @@ final class TestViewer: Viewer {
         return context?.makeImage()
     }
 
-    /// As the app's canvas does: a stage for a selected pipeline, drawn once so it's laid out.
+    /// As the app's canvas does: zooms to what's selected, and draws once so it's laid out; a pipeline's stage is the
+    /// one in focus.
     private func openCanvas() {
+        let size = CGSize(width: 1000, height: 600)
+        _ = canvasStage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: size)
+        canvasStage.show(selection, animated: false)
+        _ = canvasStage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: size)
         guard let selection, let pipeline = continuum.pipeline(at: selection) else {
             stage = nil
             return
         }
-        guard stage?.pipeline !== pipeline else { return }
-        let stage = PipelineStage(pipeline: pipeline, host: continuum.host(selection.host))
-        _ = stage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: CGSize(width: 1000, height: 600))
-        self.stage = stage
+        stage = canvasStage.stage(for: pipeline)
     }
 }
 
@@ -218,7 +226,8 @@ struct ToolTests {
         let host = try #require(json?["hosts"]?.array?.first)
         #expect(host["address"] == "meep://sim")
         #expect(host["status"] == "connected")
-        #expect(host["pipelines"]?.array?.compactMap { $0["address"]?.string } == ["meep://sim/orders", "meep://sim/ticker", "meep://sim/sensors", "meep://sim/warehouse"])
+        // A subscription's list is by name.
+        #expect(host["pipelines"]?.array?.compactMap { $0["address"]?.string } == ["meep://sim/orders", "meep://sim/sensors", "meep://sim/ticker", "meep://sim/warehouse"])
         #expect((host["pipelines"]?.array?.first?["messagesPerSecond"]?.number ?? 0) > 0)
     }
 
@@ -246,7 +255,7 @@ struct ToolTests {
     }
 
     @Test func countsAreWatchedOverAPeriod() async throws {
-        let viewer = try await TestViewer(statsEvery: .seconds(10))
+        let viewer = try await TestViewer(slowly: true)
         defer { viewer.stop() }
         let registry = ContinuumTools.registry(for: viewer)
         let (json, _) = try await call(registry, "watch_counts", ["address": "meep://sim/orders/m2", "seconds": 1])
@@ -285,17 +294,45 @@ struct ToolTests {
         #expect(png.starts(with: [0x89, 0x50, 0x4E, 0x47]))
     }
 
-    @Test func withNothingOnTheCanvasTheToolsSaySo() async throws {
+    @Test func zoomedOutTheViewIsTheMeshOrAHost() async throws {
         let viewer = try await TestViewer()
         defer { viewer.stop() }
+        viewer.selection = nil
         let registry = ContinuumTools.registry(for: viewer)
         let (view, _) = try await call(registry, "describe_view")
-        #expect(view?["canvas"] == .null)
+        #expect(view?["canvas"] == .null, "no pipeline's tiles to describe")
+        let zoom = try #require(view?["zoom"])
+        #expect(zoom["level"] == "mesh")
+        #expect(zoom["focus"] == .null)
+        let host = try #require(zoom["hostsOnScreen"]?.array?.first)
+        #expect(host["address"] == "meep://sim")
+        #expect(host["pipelines"]?.array?.count == 4)
+        #expect(host["pipelines"]?.array?.allSatisfy { $0["line"]?.string?.contains("/s in") == true } == true)
         let (_, image) = try await call(registry, "capture_view")
-        #expect(image.isError)
+        #expect(!image.isError, "the canvas can be captured at any level")
         let (shown, _) = try await call(registry, "show", ["address": "meep://sim"])
         #expect(shown?["shown"] == "meep://sim")
         #expect(viewer.selection == MeepAddress("meep://sim"))
+        #expect(viewer.canvasStage.level == .host)
+        let (_, _) = try await call(registry, "show", ["address": "meep://"])
+        #expect(viewer.selection == nil)
+        #expect(viewer.canvasStage.level == .mesh)
+    }
+
+    @Test func hostsAreListedWithTheirRollUpsAndConnections() async throws {
+        let viewer = try await TestViewer()
+        defer { viewer.stop() }
+        let host = try #require(viewer.continuum.host("sim"))
+        try await waitFor { host.runtime.cores != nil && host.traffic.bandwidth > 0 }
+        let (json, _) = try await call(ContinuumTools.registry(for: viewer), "list_continuum")
+        let listed = try #require(json?["hosts"]?.array?.first)
+        #expect(listed["id"]?.string == host.identity?.id)
+        #expect(listed["reachedBy"] == "simulated")
+        #expect((listed["rollUp"]?["inPerSecond"]?.number ?? 0) > 0)
+        #expect(listed["rollUp"]?["cores"] == 8)
+        #expect(listed["connection"]?["subscribed"] == true)
+        #expect(listed["connection"]?["budgetBytesPerSecond"] == 256000)
+        #expect(json?["zoomLevel"] != nil)
     }
 
     @Test func textComesFromTheDaemonAndSaysWhenThereIsNone() async throws {
@@ -507,5 +544,18 @@ extension FileHandle {
             data.append(contentsOf: buffer[0..<count])
         }
         return data
+    }
+}
+
+/// Waits for something the session fills in.
+@MainActor
+func waitFor(seconds: Double = 20, _ condition: @MainActor () -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(seconds)
+    while !condition() {
+        guard ContinuousClock.now < deadline else {
+            Issue.record("Timed out waiting.")
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
     }
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A ``ByteStream`` over a pair of file handles, such as the standard input and output of a program Synesthesia
@@ -15,6 +16,8 @@ public final class PipeStream: ByteStream, @unchecked Sendable {
     public init(reading: FileHandle, writing: FileHandle) {
         self.reading = reading
         self.writing = writing
+        // A program that has ended makes writing to it fail, rather than raise SIGPIPE, which would end this one.
+        _ = fcntl(writing.fileDescriptor, F_SETNOSIGPIPE, 1)
         let (chunks, continuation) = AsyncStream<Data>.makeStream()
         self.chunks = chunks
         iterator = chunks.makeAsyncIterator()

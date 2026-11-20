@@ -10,10 +10,21 @@ import Stage
 @MainActor @Observable
 public final class Workspace {
     public let continuum: Continuum
-    /// The host or pipeline selected in the sidebar.
-    public var selection: MeepAddress?
-    /// The stage the canvas is drawing, while a pipeline is showing.
+    /// The whole Continuum as the canvas draws it, in one zoom from the mesh to a pipeline (design, section 2).
+    public let canvas: ContinuumStage
+    /// The host or pipeline selected in the sidebar, or nil for the whole mesh. Selecting one moves the canvas to it;
+    /// moving the canvas onto another selects that.
+    public var selection: MeepAddress? {
+        didSet {
+            canvas.selected = selection
+            if !followingCanvas, selection != oldValue { canvas.show(selection) }
+        }
+    }
+    /// The stage of the pipeline in focus, while one is.
     public private(set) var stage: PipelineStage?
+    /// Each pipeline's editor, made when it's first in focus, kept so its palette and notices stay as they were.
+    @ObservationIgnored private var editors: [String: PipelineEditor] = [:]
+    @ObservationIgnored private var followingCanvas = false
     /// Whether a pipeline's Meeplang shows beside its canvas.
     public var showsText = false
     /// The language server the text uses, if the platform can start one.
@@ -68,6 +79,16 @@ public final class Workspace {
     public init(continuum: Continuum, language: LanguageService? = nil) {
         self.continuum = continuum
         self.language = language
+        canvas = ContinuumStage(continuum: continuum)
+        canvas.onFocus = { [weak self] address in self?.follow(address) }
+        canvas.onSelect = { [weak self] address in self?.follow(address) }
+    }
+
+    /// Selects what the canvas has settled on, without moving it.
+    private func follow(_ address: MeepAddress?) {
+        followingCanvas = true
+        defer { followingCanvas = false }
+        if selection != address { selection = address }
     }
 
     func showing(_ stage: PipelineStage) {
@@ -76,6 +97,16 @@ public final class Workspace {
 
     func hidden(_ stage: PipelineStage) {
         if self.stage === stage { self.stage = nil }
+    }
+
+    /// The editor that turns the canvas's gestures on a pipeline into edits of its text.
+    public func editor(for pipeline: MeepPipeline, host: MeepHost?) -> PipelineEditor {
+        let stage = canvas.stage(for: pipeline)
+        if let editor = editors[pipeline.id], editor.stage === stage { return editor }
+        let editor = PipelineEditor(pipeline: pipeline, host: host, stage: stage, workspace: self)
+        stage.editing = editor
+        editors[pipeline.id] = editor
+        return editor
     }
 
     // MARK: Text

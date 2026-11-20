@@ -118,3 +118,47 @@ public struct RateHistory: Sendable, Equatable {
         second = nil
     }
 }
+
+/// Named cumulative counts and their rates, as a subscription sends totals: only those that changed, by name. Each
+/// reading takes the changed ones and reads every count again at its time, so a count that stopped changing has its
+/// rate fall to 0.
+public struct CountSet: Sendable, Equatable {
+    public private(set) var values: [String: Int64] = [:]
+    private var meters: [String: RateMeter] = [:]
+    /// When it was last read, in seconds on the clock its readings use.
+    public private(set) var lastRead: Double?
+    private let smoothing: Double
+
+    public init(smoothing: Double = 2) {
+        self.smoothing = smoothing
+    }
+
+    /// Takes the counts that changed, null for one that's gone, and reads all of them at `time`.
+    public mutating func read(_ changed: [String: Int64?], at time: Double) {
+        for (key, value) in changed {
+            if let value { values[key] = value } else { values.removeValue(forKey: key) }
+        }
+        read(at: time)
+    }
+
+    /// Reads every count at `time`, as unchanged since the last reading.
+    public mutating func read(at time: Double) {
+        lastRead = time
+        for (key, value) in values {
+            meters[key, default: RateMeter(smoothing: smoothing)].update(value, at: time)
+        }
+    }
+
+    public subscript(key: String) -> Int64 { values[key] ?? 0 }
+
+    /// The rate a second of one count.
+    public func rate(_ key: String) -> Double { meters[key]?.rate ?? 0 }
+
+    public var isEmpty: Bool { values.isEmpty }
+
+    public mutating func reset() {
+        values = [:]
+        meters = [:]
+        lastRead = nil
+    }
+}

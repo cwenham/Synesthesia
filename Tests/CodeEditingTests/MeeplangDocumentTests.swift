@@ -471,7 +471,7 @@ struct MeeplangDocumentTests {
         let simulated = SimulatedHost(name: "local", latency: .milliseconds(1), pipelines: [given ?? spec(text: text, path: path)])
         let continuum = Continuum()
         let host = continuum.add(host: "local", kind: .local(socketPath: "/nowhere"))
-        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(50), watchedStatsEvery: .milliseconds(50), listEvery: .milliseconds(100))) { simulated }
+        let session = HostSession(host: host, settings: .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1)) { simulated }
         session.start()
         #expect(await eventually { host.pipeline("test")?.graph != nil && host.link != nil })
         return (continuum, host, session, simulated, path)

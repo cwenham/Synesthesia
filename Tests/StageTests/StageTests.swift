@@ -15,9 +15,9 @@ func simulated(
     let continuum = Continuum()
     let host = continuum.add(host: "sim", kind: .simulated)
     let link = SimulatedHost(name: "sim", latency: .milliseconds(1), pipelines: pipelines)
-    let session = HostSession(host: host, settings: .init(statsEvery: statsEvery, watchedStatsEvery: statsEvery, listEvery: .milliseconds(30))) { link }
+    let session = HostSession(host: host, settings: .init(leastDetail: .modules, replanEvery: .milliseconds(30), rateScale: statsEvery < .milliseconds(100) ? 0.1 : 1)) { link }
     session.start()
-    let deadline = ContinuousClock.now + .seconds(5)
+    let deadline = ContinuousClock.now + .seconds(20)
     while host.pipeline(name)?.links.first?.isCounted != true || host.pipeline(name)?.modules.first?.role == nil {
         guard ContinuousClock.now < deadline else { throw CancellationError() }
         try await Task.sleep(for: .milliseconds(10))

@@ -32,6 +32,9 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 - **2,** in Meep2 ee030d7, which also counts each link's errors and each module's `passed`.
 - **3,** in Meep2 2ef2d35, with 810c2fc, which pairs unchanged modules first when matching (Q186). Synesthesia's step 4 uses it.
 - **4,** in Meep2 0278da4, with 001842b, which pairs unchanged modules wherever they now are (Q195). Synesthesia's step 5 uses it. Both are on Meep2's `main`.
+- **5,** in Meep2 0c83a49, on `main`. Synesthesia's step 7 uses it.
+
+**Not needed yet:** 6. Step 7 didn't need `meep run` to join a daemon, so it waits until it's wanted.
 
 Prompts 1 and 2 touch the same files (`Contracts.cs`, the daemon, the runtime's stats), so run them one after the other, not side by side.
 

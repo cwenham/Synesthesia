@@ -82,6 +82,86 @@ struct LiveDaemonTests {
         await daemon.close()
     }
 
+    @Test func aDaemonSaysWhoItIsAndItsClock() async throws {
+        let daemon = try await DaemonConnection.connect(socketPath: socket)
+        let info = try await daemon.info()
+        let id = try #require(info.id)
+        #expect(UUID(uuidString: id) != nil)
+        #expect(info.names?.isEmpty == false)
+        let clock = try #require(info.clock)
+        #expect(abs(Double(clock) / 1_000_000 - Date().timeIntervalSince1970) < 60)
+        #expect(try await daemon.pipelines().first { $0.name == pipeline }?.graphVersion != nil)
+        await daemon.close()
+    }
+
+    @Test(arguments: [SubscriptionEncoding.json, .cbor])
+    func aSubscriptionSendsOnlyWhatChanged(encoding: SubscriptionEncoding) async throws {
+        let daemon = try await DaemonConnection.connect(socketPath: socket)
+        let id = try await daemon.info().id
+        let plan = SubscriptionPlan(
+            encoding: encoding, list: .seconds(1), host: .milliseconds(200),
+            pipelines: [pipeline: PipelinePlan(totals: .milliseconds(100), modules: ["*": .milliseconds(100)], links: ["*": .milliseconds(100)])]
+        )
+        let subscription = try await daemon.subscribe(plan)
+        var hello: SubscriptionHello?
+        var updates: [SubscriptionUpdate] = []
+        for try await event in subscription.events {
+            switch event {
+            case .hello(let said): hello = said
+            case .update(let update): updates.append(update)
+            default: break
+            }
+            if updates.count == 4 { break }
+        }
+        let said = try #require(hello)
+        #expect(said.host.id == id)
+        #expect(said.counts.modules.first == "received")
+        #expect(updates.map(\.seq) == [1, 2, 3, 4])
+        let first = try #require(updates[0].pipelines?[pipeline] ?? nil)
+        #expect(first.graph?.version != nil, "the first update says the graph's version")
+        #expect(first.modules?.values.allSatisfy { $0?.count == said.counts.modules.count } == true, "the first update has every count")
+        #expect(updates[0].list?[pipeline] != nil)
+        // Later ones carry only what changed: never the list again, and counts arrays cut short.
+        let later = updates.dropFirst().compactMap { $0.pipelines?[pipeline] ?? nil }
+        #expect(updates.dropFirst().allSatisfy { $0.list == nil })
+        #expect(later.contains { part in part.modules?.values.contains { ($0?.count ?? 0) < said.counts.modules.count } == true })
+        #expect(updates.last!.bytes > updates.first!.bytes)
+        await daemon.close()
+    }
+
+    @Test func aSubscriptionChangesInPlace() async throws {
+        let daemon = try await DaemonConnection.connect(socketPath: socket)
+        let subscription = try await daemon.subscribe(SubscriptionPlan(encoding: .cbor, pipelines: ["*": PipelinePlan(totals: .milliseconds(200))]))
+        var changed = false
+        var timed = false
+        for try await event in subscription.events {
+            switch event {
+            case .update(let update):
+                if !changed {
+                    #expect(update.pipelines?[pipeline]??.modules == nil, "modules weren't asked for yet")
+                    changed = true
+                    try await subscription.change(to: SubscriptionPlan(encoding: .cbor, pipelines: [
+                        "*": PipelinePlan(totals: .milliseconds(200)),
+                        pipeline: PipelinePlan(modules: ["*": .milliseconds(100)], timing: ["*": .milliseconds(100)]),
+                    ]))
+                } else if let part = update.pipelines?[pipeline] ?? nil, let timing = part.timing, !timing.isEmpty {
+                    let histogram = try #require(timing.values.first ?? nil)
+                    #expect(histogram.buckets.reduce(0, +) + histogram.zero == histogram.count)
+                    timed = true
+                }
+            case .plan(let plan):
+                #expect(plan["pipelines"]?[pipeline]?["timing"] != nil)
+            case .problem(let problem):
+                Issue.record("The change was refused: \(problem)")
+            case .hello:
+                break
+            }
+            if timed { break }
+        }
+        #expect(timed)
+        await daemon.close()
+    }
+
     @Test func nothingListeningIsSaidPlainly() async {
         await #expect(throws: (any Error).self) {
             _ = try await DaemonConnection.connect(socketPath: "/tmp/no-such-meep.sock")

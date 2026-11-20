@@ -37,6 +37,10 @@ public protocol HostLink: Sendable {
     /// dropped. A restarted pipeline's counts start again from zero.
     func stats(_ name: String, every interval: Duration) -> AsyncThrowingStream<StatsEvent, any Error>
 
+    /// Starts one subscription (design, section 4): the daemon sends only what `plan` asks for, at its rates, and only
+    /// what changed, until it's cancelled or the link closes. Daemons older than Meep2 0c83a49 refuse it.
+    func subscribe(_ plan: SubscriptionPlan) async throws -> any HostSubscription
+
     /// Closes the link. Streams end, and waiting requests fail.
     func close() async
 }

@@ -29,10 +29,11 @@ let package = Package(
         .target(name: "Transport"),
         // The Meep daemon's API: its contracts, and one WebSocket carrying every request and stream.
         .target(name: "MeepClient", dependencies: ["Transport"]),
-        // Rates from cumulative counts; later digests, history, the playout clock and the subscription planner.
+        // Rates from cumulative counts, handling-time histograms and the subscription planner; later history and the
+        // playout clock.
         .target(name: "FlowKit"),
         // The Continuum: hosts, pipelines and modules, their addresses, and keeping them up to date.
-        .target(name: "ContinuumKit", dependencies: ["MeepClient", "FlowKit"]),
+        .target(name: "ContinuumKit", dependencies: ["MeepClient", "FlowKit", "Transport"]),
         // Pretend hosts, for tests and for building the host and mesh levels without real machines.
         .target(name: "Simulation", dependencies: ["MeepClient"]),
         // meep lsp: the Language Server Protocol, with Meep's additions (the graph, keys shared with the daemon, the
@@ -53,7 +54,7 @@ let package = Package(
         // The tools Claude uses, written once (design, section 8), and the MCP server that offers them.
         .target(name: "Assistant", dependencies: ["ContinuumKit", "Stage", "FlowKit", "MeepClient", "Transport", "CodeEditing", "LanguageClient"]),
         // SwiftUI shared by the Mac and iPad apps.
-        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage", "CodeEditing", "LanguageClient", "MeepClient"]),
+        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage", "CodeEditing", "LanguageClient", "MeepClient", "FlowKit", "Transport"]),
         // The Mac app: its windows, menus and the hosts it starts with.
         .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation", "Stage", "MetalStage", "Assistant", "Transport", "CodeEditing", "LanguageClient"]),
         // synesthesia-mcp, in the app bundle: joins an MCP client's standard input and output to the app's socket.
@@ -64,7 +65,7 @@ let package = Package(
         .testTarget(name: "CodeEditingTests", dependencies: ["CodeEditing", "LanguageClient", "ContinuumKit", "Simulation", "MeepClient", "Transport"]),
         .testTarget(name: "MeepClientTests", dependencies: ["MeepClient"], resources: [.copy("Fixtures")]),
         .testTarget(name: "FlowKitTests", dependencies: ["FlowKit"]),
-        .testTarget(name: "ContinuumKitTests", dependencies: ["ContinuumKit", "Simulation"]),
+        .testTarget(name: "ContinuumKitTests", dependencies: ["ContinuumKit", "Simulation", "MeepClient", "FlowKit", "Transport"]),
         .testTarget(name: "LayoutKitTests", dependencies: ["LayoutKit"]),
         .testTarget(name: "StageTests", dependencies: ["Stage", "ContinuumKit", "Simulation", "MeepClient"]),
         .testTarget(name: "MetalStageTests", dependencies: ["MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),

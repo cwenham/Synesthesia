@@ -7,10 +7,16 @@ import MeepClient
 /// It's for tests, and for building the host and mesh levels without fifty real machines. Its counts are worked
 /// out from the time since it started, so they only go up, wobble like real traffic, and cost nothing to keep.
 public actor SimulatedHost: HostLink {
-    public let name: String
+    public nonisolated let name: String
+    /// Its lasting ID, as a daemon keeps one, made from its name so it's the same each time.
+    public nonisolated let id: String
     /// How long each answer takes.
     public var latency: Duration
-    private var pipelineSpecs: [PipelineSpec]
+    /// How far its clock is ahead of this Mac's, as another machine's may be.
+    public let clockSkew: Duration
+    /// How many processor cores it says it has.
+    public let cores: Int
+    private(set) var pipelineSpecs: [PipelineSpec]
     private let clock = ContinuousClock()
     private let epoch: ContinuousClock.Instant
     private let started: Date
@@ -23,34 +29,76 @@ public actor SimulatedHost: HostLink {
 
     public init(
         name: String = "simulated", latency: Duration = .milliseconds(20), pipelines: [PipelineSpec] = PipelineSpec.demo,
-        capabilities: [String] = ["observe"]
+        capabilities: [String] = ["observe"], clockSkew: Duration = .zero, cores: Int = 8
     ) {
         self.name = name
+        id = Self.id(for: name)
         self.latency = latency
         pipelineSpecs = pipelines
         self.capabilities = capabilities
+        self.clockSkew = clockSkew
+        self.cores = cores
         epoch = clock.now
         started = Date()
     }
 
-    private var elapsed: Double {
+    /// A UUID made from a name, so a simulated host keeps its ID from one run to the next.
+    static func id(for name: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in name.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        let low = hash &* 0x9E3779B97F4A7C15
+        let hex = String(format: "%016llx%016llx", hash, low)
+        let chars = Array(hex)
+        return "\(String(chars[0..<8]))-\(String(chars[8..<12]))-4\(String(chars[13..<16]))-8\(String(chars[17..<20]))-\(String(chars[20..<32]))"
+    }
+
+    var elapsed: Double {
         let duration = clock.now - epoch
         return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
     }
 
-    private func answer() async throws {
+    /// Its clock, in microseconds since 1970, skewed as it was made.
+    var clockNow: Int64 {
+        let skew = Double(clockSkew.components.seconds) + Double(clockSkew.components.attoseconds) / 1e18
+        return Int64(((Date().timeIntervalSince1970 + skew) * 1_000_000).rounded())
+    }
+
+    var identity: HostIdentity {
+        HostIdentity(id: id, names: [name, "\(name).simulated"], addresses: ["10.0.0.\((Int(id.prefix(2), radix: 16) ?? 0) % 200 + 20)"], version: "simulated", pid: 0)
+    }
+
+    func answer() async throws {
         if closed { throw HostError.disconnected("The simulated host was closed.") }
         try await Task.sleep(for: latency)
     }
 
     public func info() async throws -> DaemonInfo {
         try await answer()
-        return DaemonInfo(version: "simulated", processId: 0, socket: "simulated://\(name)", capabilities: capabilities, pipelines: pipelineSpecs.map(\.name))
+        let identity = identity
+        return DaemonInfo(
+            version: "simulated", processId: 0, socket: "simulated://\(name)", capabilities: capabilities, pipelines: pipelineSpecs.map(\.name),
+            id: id, names: identity.names, addresses: identity.addresses, listening: listening, clock: clockNow
+        )
+    }
+
+    /// Where its Listens are bound: one made-up address each.
+    var listening: [ListenAddress] {
+        pipelineSpecs.flatMap { spec in
+            spec.modules.indices.filter { spec.modules[$0].verb == "Listen" }.map { index in
+                ListenAddress(pipeline: spec.name, module: "m\(index + 1)", label: spec.label(index), address: "http://0.0.0.0:\(8000 + index)/\(spec.name)/")
+            }
+        }
+    }
+
+    var summaries: [PipelineSummary] {
+        pipelineSpecs.map {
+            PipelineSummary(name: $0.name, path: $0.path, state: .running, started: started, watching: $0.watching, graphVersion: $0.version)
+        }
     }
 
     public func pipelines() async throws -> [PipelineSummary] {
         try await answer()
-        return pipelineSpecs.map { PipelineSummary(name: $0.name, path: $0.path, state: .running, started: started, watching: $0.watching) }
+        return summaries
     }
 
     public func pipeline(_ name: String) async throws -> PipelineDetail {
@@ -200,6 +248,51 @@ public actor SimulatedHost: HostLink {
 
     public func close() async {
         closed = true
+        for subscription in subscriptions { subscription.finish() }
+        subscriptions.removeAll()
+    }
+
+    // MARK: Subscriptions
+
+    private var subscriptions: [SimulatedSubscription] = []
+    /// Updates to skip, as a lost frame would, for testing what a client does about a gap.
+    var updatesToLose = 0
+
+    public func subscribe(_ plan: SubscriptionPlan) async throws -> any HostSubscription {
+        try await answer()
+        let subscription = SimulatedSubscription(host: self, plan: plan)
+        subscriptions.append(subscription)
+        return subscription
+    }
+
+    /// Skips the next update's sequence number, as if it had been lost on the way.
+    public func loseNextUpdate() {
+        updatesToLose += 1
+    }
+
+    /// Bytes a second its subscriptions have sent over the last few seconds, for tests of budgets.
+    public var subscriptionsSent: Int64 {
+        subscriptions.reduce(0) { $0 + $1.sentBytes }
+    }
+
+    func takeLostUpdate() -> Bool {
+        guard updatesToLose > 0 else { return false }
+        updatesToLose -= 1
+        return true
+    }
+
+    /// Every pipeline's module counts, link counts, bytes and handling times now.
+    func reading() -> SimulatedReading {
+        let now = elapsed
+        var pipelines: [String: SimulatedReading.Pipeline] = [:]
+        for spec in pipelineSpecs {
+            let modules = spec.counts(at: now)
+            pipelines[spec.name] = SimulatedReading.Pipeline(
+                spec: spec, modules: modules.map(\.counts), links: spec.linkCounts(at: now),
+                busy: modules.indices.map { Int64((Double(modules[$0].counts.handled) * spec.modules[$0].handlingTime * 1_000_000).rounded()) }
+            )
+        }
+        return SimulatedReading(clock: clockNow, elapsed: now, pipelines: pipelines, summaries: summaries, listening: listening, cores: cores)
     }
 
     private func spec(_ name: String) throws -> PipelineSpec {
@@ -250,11 +343,15 @@ public struct PipelineSpec: Sendable {
         public var queue: Double
         /// Whether it takes only errors, as a module with `@errors` does.
         public var errorsOnly: Bool
+        /// How long it takes to handle a message, on average, in seconds.
+        public var handlingTime: Double
 
         public init(
             _ verb: String, _ role: VerbRole, name: String? = nil, from: [Int] = [], rate: Double = 0, passes: Double = 1,
-            fails: Double = 0, drops: Double = 0, queue: Double = 0, errorsOnly: Bool = false
+            fails: Double = 0, drops: Double = 0, queue: Double = 0, errorsOnly: Bool = false, handlingTime: Double? = nil
         ) {
+            self.handlingTime = from.isEmpty ? 0 : handlingTime ?? (verb == "Fetch" ? 0.004 : verb == "Send" || verb == "Save" ? 0.0012
+                : role == .filter ? 0.00003 : role == .outlet ? 0.0002 : 0.0005)
             self.verb = verb
             self.role = role
             self.name = name
@@ -382,7 +479,7 @@ public struct PipelineSpec: Sendable {
         PipelineSpec(name: "sensors", modules: [
             ModuleSpec("Listen", .inlet, name: "Readings", rate: 2400),
             ModuleSpec("Listen", .inlet, name: "Backfill", rate: 300),
-            ModuleSpec("Batch", .step, from: [0, 1], passes: 0.01, queue: 40),
+            ModuleSpec("Batch", .step, from: [0, 1], passes: 0.01, queue: 40, handlingTime: 0.00025),
             ModuleSpec("Classify", .step, from: [2], fails: 0.03, queue: 3),
             ModuleSpec("Send", .outlet, name: "Alerts", from: [3], drops: 0.05),
             ModuleSpec("Save", .outlet, name: "Rejects", from: [3], errorsOnly: true),

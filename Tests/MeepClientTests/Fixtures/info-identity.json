@@ -1,0 +1,1 @@
+{"version":"1.0.0","processId":54023,"socket":"/tmp/example-home/daemon/meep.sock","capabilities":["observe","inject","control"],"pipelines":["busy","shapes","slow"],"id":"98254d9a-206f-4759-92b5-927ab74d3254","names":["example-mac-host-name","example-mac-host-name.local"],"addresses":["192.168.0.10"],"listening":[],"clock":1795194753541802}

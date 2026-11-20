@@ -5,12 +5,12 @@ import MeepClient
 import Stage
 import SwiftUI
 
-/// Makes the view that draws a stage. Each platform supplies its own (on the Mac a Metal view) through the
+/// Makes the view that draws the Continuum's stage. Each platform supplies its own (on the Mac a Metal view) through the
 /// environment, so this package stays free of AppKit and UIKit (design, section 9: `CanvasSurface`).
 public struct CanvasSurfaceProvider {
-    public let make: @MainActor (PipelineStage) -> AnyView
+    public let make: @MainActor (ContinuumStage) -> AnyView
 
-    public init(make: @escaping @MainActor (PipelineStage) -> AnyView) {
+    public init(make: @escaping @MainActor (ContinuumStage) -> AnyView) {
         self.make = make
     }
 }
@@ -22,14 +22,14 @@ extension EnvironmentValues {
 }
 
 extension FocusedValues {
-    /// The stage in the focused window, for the View menu's zoom commands.
-    @Entry public var pipelineStage: PipelineStage?
+    /// The canvas in the focused window, for the View menu's zoom commands.
+    @Entry public var continuumStage: ContinuumStage?
 }
 
-/// A pipeline drawn live: its modules as tiles, links as wires, particles from its counts. Hovering shows the
-/// numbers behind what's drawn.
-struct PipelineCanvas: View {
-    let stage: PipelineStage
+/// The Continuum drawn live, in one zoom from the mesh of hosts to a pipeline's tiles. Hovering shows the numbers
+/// behind what's drawn: a tile's or wire's, a pipeline's roll-up, or a host's.
+struct ContinuumCanvas: View {
+    let canvas: ContinuumStage
     @Environment(\.canvasSurface) private var surface
     @Environment(\.workspace) private var workspace
     @Environment(\.pipelineEditor) private var editor
@@ -42,33 +42,25 @@ struct PipelineCanvas: View {
                     .task { await editor.loadVerbs() }
                 Divider()
             }
-            canvas
+            content
         }
-        .onAppear {
-            stage.pipeline.watchers += 1
-            workspace?.showing(stage)
-        }
-        .onDisappear {
-            stage.pipeline.watchers -= 1
-            workspace?.hidden(stage)
-        }
-        .focusedSceneValue(\.pipelineStage, stage)
+        .focusedSceneValue(\.continuumStage, canvas)
     }
 
-    private var canvas: some View {
+    private var content: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
                 if let surface {
-                    surface.make(stage)
+                    surface.make(canvas)
                 } else {
                     ContentUnavailableView("No canvas here", systemImage: "square.dashed",
                                            description: Text("This platform has no canvas yet."))
                 }
-                if let hovered = stage.hovered {
+                if let hovered = canvas.hovered {
                     // Beside the pointer, below and right of it, or wherever it fits.
-                    let pointer = stage.pointer
+                    let pointer = canvas.pointer
                     let room = geometry.size
-                    HoverCard(hit: hovered, stage: stage)
+                    card(for: hovered)
                         .fixedSize()
                         .alignmentGuide(.leading) { card in
                             let x = pointer.x + 18
@@ -81,9 +73,9 @@ struct PipelineCanvas: View {
                         .allowsHitTesting(false)
                 }
             }
-            .overlay(alignment: .bottomTrailing) { ZoomButtons(stage: stage).padding(10) }
+            .overlay(alignment: .bottomTrailing) { ZoomButtons(canvas: canvas).padding(10) }
             .overlay(alignment: .bottomLeading) {
-                if let editor, editor.canEdit, !editor.showsPalette {
+                if let editor, editor.canEdit, !editor.showsPalette, canvas.level == .pipeline {
                     Button { editor.showsPalette = true } label: { Image(systemName: "plus") }
                         .buttonStyle(.borderless)
                         .padding(6)
@@ -95,6 +87,7 @@ struct PipelineCanvas: View {
                         .padding(10)
                 }
             }
+            .overlay(alignment: .topLeading) { LevelBadge(canvas: canvas).padding(10) }
             .overlay(alignment: .top) {
                 if let notice = editor?.notice {
                     CanvasNotice(notice: notice) { editor?.dismissNotice() }.padding(10)
@@ -102,18 +95,57 @@ struct PipelineCanvas: View {
             }
         }
     }
+
+    @ViewBuilder private func card(for hit: ContinuumHit) -> some View {
+        switch hit {
+        case .inside(let address, let inside):
+            if let pipeline = canvas.continuum.pipeline(at: address) {
+                HoverCard(hit: inside, stage: canvas.stage(for: pipeline))
+            }
+        case .pipeline(let address):
+            if let pipeline = canvas.continuum.pipeline(at: address) {
+                PipelineCard(pipeline: pipeline, host: canvas.continuum.host(address.host))
+            }
+        case .host(let name):
+            if let host = canvas.continuum.host(name) { HostCard(host: host) }
+        }
+    }
+}
+
+/// Which level of the zoom the canvas is at, in its corner.
+struct LevelBadge: View {
+    let canvas: ContinuumStage
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.white.opacity(0.7))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.black.opacity(0.45), in: Capsule())
+            .help("The canvas zooms from the mesh of hosts, to a host's pipelines, to a pipeline's modules. Double-click a host or pipeline to zoom into it, or the background to see everything.")
+            .allowsHitTesting(true)
+    }
+
+    private var text: String {
+        switch canvas.level {
+        case .mesh: "Mesh"
+        case .host: "Host"
+        case .pipeline: "Pipeline"
+        }
+    }
 }
 
 struct ZoomButtons: View {
-    let stage: PipelineStage
+    let canvas: ContinuumStage
 
     var body: some View {
         HStack(spacing: 2) {
-            Button { stage.step(zoomingIn: false) } label: { Image(systemName: "minus.magnifyingglass") }
+            Button { canvas.step(zoomingIn: false) } label: { Image(systemName: "minus.magnifyingglass") }
                 .help("Zoom out (⌘-)")
-            Button { stage.fit() } label: { Image(systemName: "arrow.up.left.and.down.right.magnifyingglass") }
-                .help("Zoom to fit (⌘0), or double-click the background")
-            Button { stage.step(zoomingIn: true) } label: { Image(systemName: "plus.magnifyingglass") }
+            Button { canvas.fit() } label: { Image(systemName: "arrow.up.left.and.down.right.magnifyingglass") }
+                .help("Zoom to fit what's selected (⌘0), or double-click the background to see everything")
+            Button { canvas.step(zoomingIn: true) } label: { Image(systemName: "plus.magnifyingglass") }
                 .help("Zoom in (⌘=)")
         }
         .buttonStyle(.borderless)
@@ -121,6 +153,109 @@ struct ZoomButtons: View {
         .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(.white.opacity(0.12)))
         .environment(\.colorScheme, .dark)
+    }
+}
+
+/// A pipeline's roll-up beside the pointer, when it's drawn as a district.
+struct PipelineCard: View {
+    let pipeline: MeepPipeline
+    let host: MeepHost?
+
+    var body: some View {
+        let current = (host?.isReachable ?? false) && pipeline.state.isLive
+        VStack(alignment: .leading, spacing: 6) {
+            Text(pipeline.name).font(.headline)
+            Text("\(pipeline.state.rawValue) on \(host?.title ?? pipeline.host), \(pipeline.modules.count) modules").foregroundStyle(.secondary)
+            Divider()
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 2) {
+                row("In from sources", current ? Format.rate(pipeline.intake) + "/s" : "—")
+                row("Through modules", current ? Format.rate(pipeline.throughput) + "/s" : "—")
+                row("Cores handling", current ? Format.cores(pipeline.load) : "—")
+                if let busiest = pipeline.modules.max(by: { $0.load < $1.load }), busiest.load > 0.005 {
+                    row("Busiest", "\(busiest.label), \(Int((busiest.load * 100).rounded()))%")
+                }
+                if pipeline.errorRate > 0 { row("Failing", Format.rate(pipeline.errorRate) + "/s") }
+                if pipeline.queued > 0 { row("Waiting", pipeline.queued.formatted()) }
+                let bandwidth = pipeline.bandwidth
+                if bandwidth.received + bandwidth.sent > 0 {
+                    row("Network", "\(StageFormat.bytes(bandwidth.received))/s in, \(StageFormat.bytes(bandwidth.sent))/s out")
+                }
+                if let median = pipeline.timing.quantile(0.5), let tail = pipeline.timing.quantile(0.99) {
+                    row("Handling", "p50 \(StageFormat.duration(median)), p99 \(StageFormat.duration(tail))")
+                }
+            }
+            if !current { Text("Not current: these are the counts when last seen.").font(.caption).foregroundStyle(.orange) }
+            Text("Double-click to zoom in.").font(.caption).foregroundStyle(.secondary)
+        }
+        .cardStyle()
+    }
+
+    private func row(_ name: String, _ value: String) -> some View {
+        GridRow {
+            Text(name).foregroundStyle(.secondary)
+            Text(value).monospacedDigit()
+        }
+    }
+}
+
+/// A host's roll-up and connection beside the pointer.
+struct HostCard: View {
+    let host: MeepHost
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(host.title).font(.headline)
+            Text(host.kind.summary).foregroundStyle(.secondary)
+            if let route = host.route {
+                Text(route).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let identity = host.identity {
+                Text(([identity.names.first].compactMap { $0 } + identity.addresses.prefix(2)).joined(separator: ", "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            if host.isReachable {
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 2) {
+                    row("Pipelines", "\(host.pipelines.count)")
+                    row("In from sources", Format.rate(host.intake) + "/s")
+                    row("Cores handling", Format.cores(host.load))
+                    if let headroom = host.headroom {
+                        row("Cores spare", "\(Int((headroom.spare * 100).rounded()))% of \(headroom.cores)")
+                    }
+                    if let memory = host.runtime.workingSet { row("Daemon's memory", StageFormat.bytes(memory)) }
+                    if host.traffic.subscribed {
+                        row("Connection", "\(StageFormat.bytes(host.traffic.bandwidth))/s" + (host.budget.map { " of \(StageFormat.bytes($0))/s" } ?? ""))
+                        if host.traffic.slowdown > 1 {
+                            row("To stay in budget", String(format: "%.1f× slower", host.traffic.slowdown))
+                        }
+                    }
+                    if let offset = host.clockOffset { row("Clock", String(format: "%+.2f s from this Mac", offset)) }
+                }
+            } else {
+                Text(host.statusText).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Double-click to zoom in.").font(.caption).foregroundStyle(.secondary)
+        }
+        .cardStyle()
+    }
+
+    private func row(_ name: String, _ value: String) -> some View {
+        GridRow {
+            Text(name).foregroundStyle(.secondary)
+            Text(value).monospacedDigit()
+        }
+    }
+}
+
+extension View {
+    /// The hover cards' look: dark, rounded, left-aligned.
+    func cardStyle() -> some View {
+        font(.callout)
+            .padding(10)
+            .frame(maxWidth: 360, alignment: .leading)
+            .background(Color(white: 0.09).opacity(0.94), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.14)))
+            .environment(\.colorScheme, .dark)
     }
 }
 

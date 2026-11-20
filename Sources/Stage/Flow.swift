@@ -132,4 +132,26 @@ public enum StageFormat {
     public static func count(_ value: Int64) -> String {
         value.formatted()
     }
+
+    /// Bytes, in the decimal units network speeds are given in: 812 B, 64 KB, 1.2 MB.
+    public static func bytes(_ value: Double) -> String {
+        switch value {
+        case ..<1000: "\(Int(value.rounded())) B"
+        case ..<10_000: String(format: "%.1f KB", value / 1000)
+        case ..<1_000_000: "\(Int((value / 1000).rounded())) KB"
+        case ..<10_000_000: String(format: "%.1f MB", value / 1_000_000)
+        default: "\(Int((value / 1_000_000).rounded())) MB"
+        }
+    }
+
+    /// A handling time, from seconds: 42 µs, 1.3 ms, 2.1 s.
+    public static func duration(_ seconds: Double) -> String {
+        switch seconds {
+        case ..<0.000_001: "<1 µs"
+        case ..<0.001: "\(Int((seconds * 1_000_000).rounded())) µs"
+        case ..<0.01: String(format: "%.1f ms", seconds * 1000)
+        case ..<1: "\(Int((seconds * 1000).rounded())) ms"
+        default: String(format: "%.1f s", seconds)
+        }
+    }
 }

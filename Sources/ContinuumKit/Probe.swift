@@ -137,6 +137,8 @@ public final class Probe: Identifiable {
         do {
             state = .running
             for try await event in link.tap(pipeline.name, module: "\(module.number)", where: tapCondition, sample: sample < 1 ? sample : nil) {
+                // One already on its way when the probe was paused isn't taken.
+                guard !Task.isCancelled else { break }
                 take(event)
             }
             if !Task.isCancelled { state = .ended("\(pipeline.name) has stopped.") }

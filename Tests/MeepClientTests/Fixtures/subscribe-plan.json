@@ -1,0 +1,1 @@
+{"id":1,"event":"plan","data":{"encoding":"json","list":"1s","host":"1s","runtime":"1s","pipelines":{"*":{"totals":"1s"},"busy":{"totals":"500ms","modules":{"*":"500ms"},"links":{"*":"500ms"},"bytes":{"*":"1s"}},"slow":{"modules":{"*":"1s"}}}}}

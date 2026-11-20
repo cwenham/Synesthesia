@@ -5,10 +5,10 @@ import Stage
 import SwiftUI
 import SynesthesiaUI
 
-/// The Mac's canvas surface: a Metal view that draws a stage every frame and turns the pointer, trackpad and mouse
-/// into the stage's gestures.
+/// The Mac's canvas surface: a Metal view that draws the Continuum every frame and turns the pointer, trackpad and
+/// mouse into its gestures, and those of the pipeline under the pointer when its tiles are drawn.
 struct MacCanvas: NSViewRepresentable {
-    let stage: PipelineStage
+    let stage: ContinuumStage
 
     /// One renderer for the app, so the glyph atlas is shared by every canvas.
     @MainActor static let renderer = StageRenderer()
@@ -31,16 +31,19 @@ struct MacCanvas: NSViewRepresentable {
 }
 
 final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
-    private let stage: PipelineStage
+    private let canvas: ContinuumStage
     private let renderer: StageRenderer
     private var dragged = false
-    /// The tile pressed on, which a drag moves.
+    /// The tile pressed on, which a drag moves, and the pipeline it's in.
     private var pressedTile: String?
+    private var pressedStage: PipelineStage?
+    /// The pipeline under the pointer, or the one in focus, for keys, menus and drops.
+    private var stage: PipelineStage? { canvas.focusedStage }
     /// Where the mouse went down, to tell a drag from a click.
     private var pressedAt: CGPoint = .zero
 
-    init(stage: PipelineStage, renderer: StageRenderer) {
-        self.stage = stage
+    init(stage: ContinuumStage, renderer: StageRenderer) {
+        canvas = stage
         self.renderer = renderer
         super.init(frame: .zero, device: renderer.device)
         colorPixelFormat = renderer.pixelFormat
@@ -52,7 +55,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         // Verbs from the palette and messages from probes are dropped here, as text.
         registerForDraggedTypes([.string])
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Pipeline \(stage.pipeline.name)")
+        setAccessibilityLabel("The Continuum: hosts and their pipelines")
     }
 
     @available(*, unavailable)
@@ -74,7 +77,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
     private func drawFrame() {
         guard let pass = currentRenderPassDescriptor, let drawable = currentDrawable,
               let commands = renderer.makeCommandBuffer() else { return }
-        let snapshot = stage.frame(at: CACurrentMediaTime(), viewSize: bounds.size)
+        let snapshot = canvas.frame(at: CACurrentMediaTime(), viewSize: bounds.size)
         renderer.encode(snapshot, into: commands, pass: pass, size: bounds.size, pixelScale: window?.backingScaleFactor ?? 2)
         commands.present(drawable)
         commands.commit()
@@ -93,11 +96,11 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        stage.hover(at: location(of: event))
+        canvas.hover(at: location(of: event))
     }
 
     override func mouseExited(with event: NSEvent) {
-        stage.hover(at: nil)
+        canvas.hover(at: nil)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -106,52 +109,52 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         // A drag that starts on a tile moves it, and everything under it, under the tile it's dropped on; one that
         // starts on the background moves the view.
         pressedAt = location(of: event)
-        if case .tile(let key)? = stage.hit(at: pressedAt), stage.editing != nil, !event.modifierFlags.contains(.command) {
+        pressedTile = nil
+        pressedStage = nil
+        if case .inside(_, .tile(let key))? = canvas.hit(at: pressedAt), let under = canvas.pipelineStage(at: pressedAt),
+           under.editing != nil, !event.modifierFlags.contains(.command) {
             pressedTile = key
-        } else {
-            pressedTile = nil
+            pressedStage = under
         }
         if event.clickCount == 2 {
-            // The background fits the pipeline; a tile opens its text beside the canvas.
-            switch stage.hit(at: location(of: event)) {
-            case nil: stage.fit()
-            case .tile(let key)?: stage.requestText(at: key)
-            case .wire?: break
-            }
+            // A tile opens its text beside the canvas; a pipeline or host is zoomed into; the background shows all.
+            canvas.doubleClick(at: pressedAt)
         }
     }
 
     /// Dragging the background moves the view; dragging a tile carries its ghost, lighting the tile it would go under.
     override func mouseDragged(with event: NSEvent) {
         let point = location(of: event)
-        if let pressedTile {
+        if let pressedTile, let pressedStage {
             // A few points of wobble is still a click.
             guard dragged || hypot(point.x - pressedAt.x, point.y - pressedAt.y) > 4 else { return }
             dragged = true
             NSCursor.closedHand.set()
-            stage.hover(at: nil)
-            stage.dragTile(pressedTile, to: point)
+            canvas.hover(at: nil)
+            pressedStage.dragTile(pressedTile, to: point)
             return
         }
         dragged = true
         NSCursor.closedHand.set()
-        stage.pan(by: CGVector(dx: event.deltaX, dy: event.deltaY))
-        stage.hover(at: nil)
+        canvas.pan(by: CGVector(dx: event.deltaX, dy: event.deltaY))
+        canvas.hover(at: nil)
     }
 
     override func mouseUp(with event: NSEvent) {
-        if let moving = pressedTile, dragged {
+        if let moving = pressedTile, let pressedStage, dragged {
             pressedTile = nil
+            self.pressedStage = nil
             NSCursor.arrow.set()
-            stage.editing?.move(moving, under: stage.endTileDrag())
+            pressedStage.editing?.move(moving, under: pressedStage.endTileDrag())
             return
         }
         pressedTile = nil
+        pressedStage = nil
         if dragged {
             NSCursor.arrow.set()
-            stage.hover(at: location(of: event))
-        } else {
-            stage.click(at: location(of: event), modifiers: event.modifierFlags.contains(.command) ? .command : [])
+            canvas.hover(at: location(of: event))
+        } else if event.clickCount < 2 {
+            canvas.click(at: location(of: event), modifiers: event.modifierFlags.contains(.command) ? .command : [])
         }
     }
 
@@ -160,20 +163,20 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         let point = location(of: event)
         if event.modifierFlags.contains(.command) {
             let lines = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 40 : event.scrollingDeltaY / 4
-            stage.zoom(by: exp(lines * 0.5), at: point)
+            canvas.zoom(by: exp(lines * 0.5), at: point)
         } else {
             let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
-            stage.pan(by: CGVector(dx: event.scrollingDeltaX * scale, dy: event.scrollingDeltaY * scale))
+            canvas.pan(by: CGVector(dx: event.scrollingDeltaX * scale, dy: event.scrollingDeltaY * scale))
         }
-        stage.hover(at: point)
+        canvas.hover(at: point)
     }
 
     override func magnify(with event: NSEvent) {
-        stage.zoom(by: 1 + event.magnification, at: location(of: event))
+        canvas.zoom(by: 1 + event.magnification, at: location(of: event))
     }
 
     override func smartMagnify(with event: NSEvent) {
-        stage.fit()
+        canvas.doubleClick(at: location(of: event))
     }
 
     // MARK: Editing
@@ -181,7 +184,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
     /// ⌫ deletes the selected modules; ⌥⌫ deletes them with everything under them.
     override func keyDown(with event: NSEvent) {
         let delete = event.keyCode == 51 || event.keyCode == 117
-        if delete, !stage.selection.isEmpty, let editing = stage.editing {
+        if delete, let stage, !stage.selection.isEmpty, let editing = stage.editing {
             editing.delete(stage.selection, branch: event.modifierFlags.contains(.option))
         } else {
             super.keyDown(with: event)
@@ -190,6 +193,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
 
     /// A tile's menu: probe it, send it a message, show it in the text, or delete it. A wire's: probe it.
     override func menu(for event: NSEvent) -> NSMenu? {
+        guard let stage = canvas.pipelineStage(at: location(of: event)) else { return nil }
         let hit = stage.hit(at: location(of: event))
         if case .wire(let key)? = hit, let editing = stage.editing {
             let menu = NSMenu()
@@ -221,7 +225,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
 
     /// ⌘Z on the canvas undoes the text's last change, whether it was typed or made here.
     override var undoManager: UndoManager? {
-        stage.editing?.undoManager ?? super.undoManager
+        stage?.editing?.undoManager ?? super.undoManager
     }
 
     @objc func undo(_ sender: Any?) {
@@ -251,30 +255,47 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         draggingUpdated(sender)
     }
 
+    /// The pipeline a drop would go to: the one drawn in full under the pointer, if it can be edited.
+    private func dropStage(_ sender: any NSDraggingInfo) -> PipelineStage? {
+        guard let under = canvas.pipelineStage(at: convert(sender.draggingLocation, from: nil)), under.editing != nil else { return nil }
+        return under
+    }
+
     /// Lights what a drop would land on: a tile, or a wire.
     override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        guard stage.editing != nil, sender.draggingPasteboard.availableType(from: [.string]) != nil else { return [] }
+        guard sender.draggingPasteboard.availableType(from: [.string]) != nil, let under = dropStage(sender) else {
+            clearDropTargets()
+            return []
+        }
         // While something is dragged over, what it would land on is lit, and nothing shows as hovered.
-        stage.hover(at: nil)
-        stage.dropTarget = stage.hit(at: convert(sender.draggingLocation, from: nil))
+        canvas.hover(at: nil)
+        clearDropTargets(except: under)
+        under.dropTarget = under.hit(at: convert(sender.draggingLocation, from: nil))
         return .copy
     }
 
+    private func clearDropTargets(except kept: PipelineStage? = nil) {
+        for pipeline in canvas.continuum.hosts.flatMap(\.pipelines) {
+            let stage = canvas.stage(for: pipeline)
+            if stage !== kept { stage.dropTarget = nil }
+        }
+    }
+
     override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-        stage.dropTarget = nil
-        stage.hover(at: nil)
+        clearDropTargets()
+        canvas.hover(at: nil)
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        let hit = stage.hit(at: convert(sender.draggingLocation, from: nil))
-        stage.dropTarget = nil
-        guard let payload = sender.draggingPasteboard.string(forType: .string), let editing = stage.editing else { return false }
+        clearDropTargets()
+        guard let under = dropStage(sender), let payload = sender.draggingPasteboard.string(forType: .string), let editing = under.editing else { return false }
+        let hit = under.hit(at: convert(sender.draggingLocation, from: nil))
         window?.makeFirstResponder(self)
         return editing.drop(payload, on: hit)
     }
 
     override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
-        stage.dropTarget = nil
+        clearDropTargets()
     }
 
     // MARK: VoiceOver
@@ -283,7 +304,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
 
     override func accessibilityChildren() -> [Any]? {
         guard let window else { return [] }
-        return stage.accessibilityItems().map { item in
+        return canvas.accessibilityItems().map { item in
             let onScreen = window.convertToScreen(convert(item.frame, to: nil))
             let role: NSAccessibility.Role = if case .tile = item.hit { .button } else { .unknown }
             return NSAccessibilityElement.element(withRole: role, frame: onScreen, label: item.label, parent: self)

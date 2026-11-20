@@ -32,7 +32,7 @@ struct HostSessionTests {
         let continuum = Continuum()
         let host = continuum.add(host: "sim", kind: .simulated)
         let link = SimulatedHost(name: "sim", latency: .milliseconds(1))
-        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(50), listEvery: .milliseconds(50))) { link }
+        let session = HostSession(host: host, settings: .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1)) { link }
         session.start()
         defer { session.stop() }
 
@@ -49,11 +49,12 @@ struct HostSessionTests {
         #expect(orders.links.filter { !$0.isCounted }.isEmpty)
     }
 
-    @Test func aWatchedPipelinesCountsComeMoreOften() async throws {
+    /// As step 1 followed hosts, which it still does for daemons older than Meep2 0c83a49: a stats stream each.
+    @Test func withoutASubscriptionAWatchedPipelinesCountsComeMoreOften() async throws {
         let continuum = Continuum()
         let host = continuum.add(host: "sim", kind: .simulated)
         let link = SimulatedHost(name: "sim", latency: .milliseconds(1))
-        let session = HostSession(host: host, settings: .init(statsEvery: .seconds(10), watchedStatsEvery: .milliseconds(20), listEvery: .milliseconds(50))) { link }
+        let session = HostSession(host: host, settings: .init(statsEvery: .seconds(10), watchedStatsEvery: .milliseconds(20), listEvery: .milliseconds(50), subscribes: false)) { link }
         session.start()
         defer { session.stop() }
         try await waitUntil { host.pipeline("ticker")?.links.first?.isCounted == true }
@@ -68,7 +69,7 @@ struct HostSessionTests {
     @Test func aHostThatGoesAwayShowsNoRates() async throws {
         let continuum = Continuum()
         let host = continuum.add(host: "sim", kind: .simulated)
-        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(50), listEvery: .milliseconds(50))) {
+        let session = HostSession(host: host, settings: .init(replanEvery: .milliseconds(50), rateScale: 0.1)) {
             SimulatedHost(name: "sim", latency: .milliseconds(1))
         }
         session.start()
@@ -141,7 +142,7 @@ struct SimulationTests {
 
 /// Waits until `condition` holds, failing after `seconds`: long, since other suites can keep the main actor busy.
 @MainActor
-func waitUntil(seconds: Double = 10, _ condition: @MainActor () async -> Bool) async throws {
+func waitUntil(seconds: Double = 20, _ condition: @MainActor () async -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(seconds)
     while !(await condition()) {
         guard ContinuousClock.now < deadline else {
@@ -179,7 +180,7 @@ struct ProbeTests {
         probe.start()
         try await waitUntil { probe.seen >= 4 }
         #expect(probe.state == .running)
-        #expect(probe.messages.count == 3)
+        try #require(probe.messages.count == 3)
         #expect(probe.messages[0].created >= probe.messages[1].created)
         #expect(probe.title == "\(source.label) out")
         probe.pause()

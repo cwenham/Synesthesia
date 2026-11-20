@@ -12,13 +12,48 @@ public struct DaemonInfo: Codable, Sendable, Equatable {
     public var capabilities: [String]
     /// The names of the pipelines it runs, or ran recently.
     public var pipelines: [String]
+    /// A lasting ID for the daemon, made once and kept in its folder, so it's known however it's reached. Nil from
+    /// daemons older than Meep2 0c83a49.
+    public var id: String?
+    /// The machine's names, short and in full.
+    public var names: [String]?
+    /// The machine's addresses on the networks it's on, IPv4 first.
+    public var addresses: [String]?
+    /// Where its Listens are bound.
+    public var listening: [ListenAddress]?
+    /// The daemon's clock when it answered, in microseconds since 1970 (UTC).
+    public var clock: Int64?
 
-    public init(version: String, processId: Int, socket: String, capabilities: [String], pipelines: [String]) {
+    public init(
+        version: String, processId: Int, socket: String, capabilities: [String], pipelines: [String], id: String? = nil,
+        names: [String]? = nil, addresses: [String]? = nil, listening: [ListenAddress]? = nil, clock: Int64? = nil
+    ) {
         self.version = version
         self.processId = processId
         self.socket = socket
         self.capabilities = capabilities
         self.pipelines = pipelines
+        self.id = id
+        self.names = names
+        self.addresses = addresses
+        self.listening = listening
+        self.clock = clock
+    }
+}
+
+/// Where a Listen is bound: `http://0.0.0.0:8080/hooks/`, say, for one on every network.
+public struct ListenAddress: Codable, Sendable, Equatable {
+    public var pipeline: String
+    /// The Listen's key in its pipeline's graph.
+    public var module: String
+    public var label: String
+    public var address: String
+
+    public init(pipeline: String, module: String, label: String, address: String) {
+        self.pipeline = pipeline
+        self.module = module
+        self.label = label
+        self.address = address
     }
 }
 
@@ -48,10 +83,12 @@ public struct PipelineSummary: Codable, Sendable, Equatable {
     public var restarts: Int
     /// Whether the daemon reloads it when its file changes. Nil from daemons older than Meep2 0278da4, which don't say.
     public var watching: Bool?
+    /// The version of its graph, so a client knows when to fetch it again. Nil from daemons older than Meep2 0c83a49.
+    public var graphVersion: Int?
 
     public init(
         name: String, path: String, state: PipelineState, started: Date, warnings: [String] = [],
-        ended: Date? = nil, reason: String? = nil, restarts: Int = 0, watching: Bool? = nil
+        ended: Date? = nil, reason: String? = nil, restarts: Int = 0, watching: Bool? = nil, graphVersion: Int? = nil
     ) {
         self.name = name
         self.path = path
@@ -62,6 +99,20 @@ public struct PipelineSummary: Codable, Sendable, Equatable {
         self.reason = reason
         self.restarts = restarts
         self.watching = watching
+        self.graphVersion = graphVersion
+    }
+
+    /// Reads warnings and restarts the daemon leaves out as none, as a subscription's list does.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try c.decode(String.self, forKey: .name), path: try c.decode(String.self, forKey: .path),
+            state: try c.decode(PipelineState.self, forKey: .state), started: try c.decode(Date.self, forKey: .started),
+            warnings: try c.decodeIfPresent([String].self, forKey: .warnings) ?? [],
+            ended: try c.decodeIfPresent(Date.self, forKey: .ended), reason: try c.decodeIfPresent(String.self, forKey: .reason),
+            restarts: try c.decodeIfPresent(Int.self, forKey: .restarts) ?? 0, watching: try c.decodeIfPresent(Bool.self, forKey: .watching),
+            graphVersion: try c.decodeIfPresent(Int.self, forKey: .graphVersion)
+        )
     }
 }
 

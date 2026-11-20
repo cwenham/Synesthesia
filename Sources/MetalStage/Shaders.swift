@@ -485,6 +485,66 @@ fragment float4 particle_fragment(ParticleOut in [[stage_in]], constant Uniforms
     return premultiply(in.color.rgb, in.color.a * alpha);
 }
 
+// MARK: Regions: the plates hosts and pipelines sit on when the Continuum is drawn whole, rounded rectangles (or
+// circles) with a fill and an outline whose width is in points, so they read the same at every zoom.
+
+struct Region {
+    float4 fill;
+    float4 stroke;
+    float2 center;
+    float2 halfSize;
+    float radius;       // world units
+    float strokeWidth;  // points
+    int flags;          // 1 dashed, 2 hovered, 4 selected
+    float glow;         // 0 to 1
+};
+
+struct RegionOut {
+    float4 position [[position]];
+    float2 local;
+    uint index [[flat]];
+};
+
+vertex RegionOut region_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], constant Uniforms& u [[buffer(0)]],
+                               constant Region* regions [[buffer(1)]]) {
+    Region r = regions[iid];
+    float margin = (r.strokeWidth + 16.0) / u.scale;
+    float2 local = mix(-r.halfSize - margin, r.halfSize + margin, corners[vid]);
+    RegionOut out;
+    out.position = toClip(r.center + local, u);
+    out.local = local;
+    out.index = iid;
+    return out;
+}
+
+fragment float4 region_fragment(RegionOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                                constant Region* regions [[buffer(1)]]) {
+    Region r = regions[in.index];
+    float px = pixel(u);
+    float radius = min(r.radius, min(r.halfSize.x, r.halfSize.y));
+    float2 q = abs(in.local) - r.halfSize + radius;
+    float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    float fillAlpha = clamp(0.5 - sd / px, 0.0, 1.0);
+    float width = r.strokeWidth / u.scale;
+    float strokeAlpha = clamp(0.5 - (abs(sd + width * 0.5) - width * 0.5) / px, 0.0, 1.0);
+    if ((r.flags & 1) != 0) {
+        float dash = 9.0 / u.scale;
+        strokeAlpha *= step(0.45, fract((in.local.x + in.local.y) / dash));
+    }
+    float4 color = premultiply(r.fill.rgb, r.fill.a * fillAlpha);
+    float glow = r.glow;
+    if ((r.flags & 2) != 0) glow = max(glow, 0.35);
+    if ((r.flags & 4) != 0) glow = max(glow, 0.6);
+    if (glow > 0) {
+        float reach = 12.0 / u.scale;
+        float outside = max(sd, 0.0);
+        float halo = exp(-(outside * outside) / (reach * reach)) * (1.0 - fillAlpha) * glow * 0.5;
+        color = over(color, premultiply(r.stroke.rgb, halo));
+    }
+    color = over(color, premultiply(r.stroke.rgb, r.stroke.a * strokeAlpha));
+    return color;
+}
+
 // MARK: Text, from a glyph atlas of signed distances.
 
 struct Glyph {

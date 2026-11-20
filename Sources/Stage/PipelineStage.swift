@@ -206,6 +206,27 @@ public final class PipelineStage {
 
     @ObservationIgnored private var camera = Camera()
     @ObservationIgnored private var cameraEasing: Easing<Camera>?
+    /// Where the Continuum has put the pipeline (design, section 2): its layout's top left, in the world every host
+    /// and pipeline shares. Moving it eases the tiles there.
+    @ObservationIgnored public private(set) var origin: CGPoint = .zero
+    /// Whether the next layout puts tiles in place at once rather than easing them there.
+    @ObservationIgnored private var placesAtOnce = false
+
+    /// Puts the pipeline's layout at `origin` in the shared world: eased there, as when the Continuum is packed again,
+    /// or at once, the first time it's placed.
+    public func place(at origin: CGPoint, animated: Bool) {
+        guard origin != self.origin else { return }
+        self.origin = origin
+        signature = ""
+        if !animated { placesAtOnce = true }
+    }
+    /// While the stage is drawn as part of the Continuum, the camera the Continuum is seen with; the stage then
+    /// doesn't move a camera of its own.
+    @ObservationIgnored public private(set) var sharedCamera: Camera?
+    /// Asked to move the camera while the Continuum draws the stage: to show a module, fit the pipeline or zoom a step.
+    @ObservationIgnored public var cameraMover: ((Camera) -> Void)?
+    /// How far the layout was shifted to put it at ``origin``.
+    @ObservationIgnored private var shift: CGVector = .zero
     /// Whether the person has moved the camera; until they do, it follows the layout.
     @ObservationIgnored private var cameraMoved = false
     @ObservationIgnored private var fitted = false
@@ -265,18 +286,25 @@ public final class PipelineStage {
         adopt(Theme.current)
         advanceStars(by: elapsed)
         rebuildShown()
-        if size != viewSize {
+        if let sharedCamera {
             viewSize = size
-            if !cameraMoved, fitted { camera = Camera.fitting(bounds, in: size) }
-        }
-        layOutIfChanged()
-        if !fitted, !tiles.isEmpty, size.width > 0 {
-            camera = Camera.fitting(bounds, in: size)
-            fitted = true
-        }
-        if let easing = cameraEasing {
-            camera = easing.value(at: time)
-            if easing.isDone(at: time) { cameraEasing = nil }
+            camera = sharedCamera
+            cameraEasing = nil
+            layOutIfChanged()
+        } else {
+            if size != viewSize {
+                viewSize = size
+                if !cameraMoved, fitted { camera = Camera.fitting(bounds, in: size) }
+            }
+            layOutIfChanged()
+            if !fitted, !tiles.isEmpty, size.width > 0 {
+                camera = Camera.fitting(bounds, in: size)
+                fitted = true
+            }
+            if let easing = cameraEasing {
+                camera = easing.value(at: time)
+                if easing.isDone(at: time) { cameraEasing = nil }
+            }
         }
 
         var snapshot = StageSnapshot()
@@ -391,6 +419,46 @@ public final class PipelineStage {
         return snapshot
     }
 
+    // MARK: In the Continuum
+
+    /// Draws with the Continuum's camera from now on, in a view of `size` points, rather than a camera of its own.
+    public func share(_ camera: Camera, viewSize size: CGSize) {
+        sharedCamera = camera
+        self.camera = camera
+        viewSize = size
+        cameraEasing = nil
+        cameraMoved = true
+        fitted = true
+    }
+
+    /// Lays the pipeline out, if it has changed, without drawing it, so the Continuum knows its size.
+    public func prepare(at time: Double) {
+        if self.time == 0 { self.time = time }
+        adopt(Theme.current)
+        rebuildShown()
+        layOutIfChanged()
+    }
+
+    /// The pipeline's tiles and labels, in world units: where its layout is, from ``origin``.
+    public var layoutBounds: CGRect { bounds }
+
+    /// The tiles' frames as laid out, eased or not, for drawing a pipeline small.
+    public var tileFrames: [(key: String, frame: CGRect, shape: TileShape, color: StageColor)] {
+        order.compactMap { key in
+            guard let tile = tiles[key] else { return nil }
+            return (key, CGRect(origin: tile.frame.origin, size: tile.size), tile.shape, tile.color)
+        }
+    }
+
+    /// Eases the camera to `target`: its own, or the Continuum's while it draws the stage.
+    private func move(to target: Camera) {
+        if let cameraMover {
+            cameraMover(target)
+        } else {
+            cameraEasing = Easing(from: camera, to: target, start: time)
+        }
+    }
+
     // MARK: Theme
 
     /// Draws with `new` from now on, laying the pipeline out again if its tiles or labels change size or shape.
@@ -418,7 +486,7 @@ public final class PipelineStage {
     /// Lays the pipeline out again when its modules or links change, easing tiles from where they were.
     private func layOutIfChanged() {
         let keys = shownModules.map(\.key)
-        let signature = keys.joined(separator: ",") + "|" + shownLinks.map(\.key).joined(separator: ",")
+        let signature = "\(origin.x),\(origin.y)|" + keys.joined(separator: ",") + "|" + shownLinks.map(\.key).joined(separator: ",")
             + "|" + shownModules.map { "\($0.role?.rawValue ?? "")\($0.label)\(detailText(for: $0))" }.joined(separator: ",")
         guard signature != self.signature else { return }
         self.signature = signature
@@ -443,12 +511,17 @@ public final class PipelineStage {
         layout.columnAlignment = .leading
         layout.inputSpan = theme.tiles.inputSpan
         // Earlier places as hints, by the middle of each tile.
-        let previous = tiles.mapValues { CGPoint(x: $0.frame.midX, y: $0.frame.midY) }
+        let previous = tiles.mapValues { CGPoint(x: $0.frame.midX - shift.dx, y: $0.frame.midY - shift.dy) }
         let result = layout.layout(LayoutGraph(nodes: nodes, edges: edges), previous: previous)
+        // Placed where the Continuum puts it.
+        shift = CGVector(dx: origin.x, dy: origin.y)
+        let shifted = { (point: CGPoint) in CGPoint(x: point.x + self.shift.dx, y: point.y + self.shift.dy) }
 
-        let hadTiles = !tiles.isEmpty
+        let hadTiles = !tiles.isEmpty && !placesAtOnce
+        placesAtOnce = false
         oldBends = hadTiles ? bends : [:]
-        for (key, frame) in result.frames {
+        for (key, laid) in result.frames {
+            let frame = laid.offsetBy(dx: shift.dx, dy: shift.dy)
             made[key]?.frame = frame
             if hadTiles, let before = tiles[key] {
                 // Moves are eased, from where the tile is drawn now.
@@ -458,9 +531,9 @@ public final class PipelineStage {
         }
         tiles = made
         order = shownModules.map(\.key)
-        bends = result.bends
+        bends = result.bends.mapValues { $0.map(shifted) }
         backward = result.backward
-        bounds = result.bounds
+        bounds = result.bounds.offsetBy(dx: shift.dx, dy: shift.dy)
         wiresNeedRouting = true
         wireFlows = wireFlows.filter { key, _ in linkIndex[key] != nil }
         tileFlows = tileFlows.filter { key, _ in made[key] != nil }
@@ -695,13 +768,13 @@ public final class PipelineStage {
         }
         let target = (cameraEasing?.to ?? camera).zoomed(by: zoomingIn ? 1.5 : 1 / 1.5, at: CGPoint(x: viewSize.width / 2, y: viewSize.height / 2), in: viewSize)
         cameraMoved = true
-        cameraEasing = Easing(from: camera, to: target, start: time)
+        move(to: target)
     }
 
     /// Shows the whole pipeline, eased, and follows its layout again.
     public func fit() {
-        cameraMoved = false
-        cameraEasing = Easing(from: camera, to: Camera.fitting(bounds, in: viewSize), start: time)
+        cameraMoved = sharedCamera != nil
+        move(to: Camera.fitting(bounds, in: viewSize))
     }
 
     /// The camera now, for tests and overlays.
@@ -718,7 +791,7 @@ public final class PipelineStage {
         let middle = CGPoint(x: tile.frame.minX + tile.size.width / 2, y: tile.frame.minY + tile.frame.height / 2)
         let target = Camera(center: middle, scale: min(max((cameraEasing?.to ?? camera).scale, 1), Camera.maximumScale))
         cameraMoved = true
-        cameraEasing = Easing(from: camera, to: target, start: time)
+        move(to: target)
         return true
     }
 
@@ -927,7 +1000,7 @@ public final class PipelineStage {
         let room = CGRect(origin: .zero, size: viewSize).insetBy(dx: 24, dy: 24)
         guard !room.contains(shown) else { return }
         cameraMoved = true
-        cameraEasing = Easing(from: camera, to: Camera(center: CGPoint(x: face.midX, y: face.midY), scale: target.scale), start: time)
+        move(to: Camera(center: CGPoint(x: face.midX, y: face.midY), scale: target.scale))
     }
 
     /// Asks for the text beside the canvas, scrolled to `key`'s line.

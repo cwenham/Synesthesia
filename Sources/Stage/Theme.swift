@@ -18,11 +18,14 @@ public struct Theme: Sendable, Equatable, Codable {
     public var wires: Wires
     public var particles: Particles
     public var labels: Labels
+    /// Hosts and pipelines as the Continuum draws them, zoomed out.
+    public var continuum: ContinuumLook
 
     public init(
         name: String, canvas: Canvas, starfield: Starfield, roles: Roles, colors: Colors, tiles: Tiles, wires: Wires,
-        particles: Particles, labels: Labels
+        particles: Particles, labels: Labels, continuum: ContinuumLook = .standard
     ) {
+        self.continuum = continuum
         self.name = name
         self.canvas = canvas
         self.starfield = starfield
@@ -247,6 +250,60 @@ public struct Theme: Sendable, Equatable, Codable {
         /// Text smaller than this on screen, in points, isn't drawn.
         public var smallestTitle: CGFloat
         public var smallestDetail: CGFloat
+    }
+}
+
+/// How the Continuum looks zoomed out (design, section 2): each host a plate with its pipelines as districts on it,
+/// and from further out each host a node of the mesh.
+public struct ContinuumLook: Sendable, Equatable, Codable {
+    public var hostFill: StageColor
+    public var hostStroke: StageColor
+    /// A host that can't be reached: its plate dashed and greyed.
+    public var unreachable: StageColor
+    public var districtFill: StageColor
+    public var districtStroke: StageColor
+    /// A pipeline's plate by how busy it is, from idle through busy to its limit: cool to hot.
+    public var cool: StageColor
+    public var warm: StageColor
+    public var hot: StageColor
+    /// Meters: the spare share of a host's cores, and their track.
+    public var spare: StageColor
+    public var meterTrack: StageColor
+    /// Fonts in points: they keep their size on screen at every zoom.
+    public var hostTitleFont: StageFont
+    public var titleFont: StageFont
+    public var detailFont: StageFont
+    /// Corners, room and gaps, in world units.
+    public var hostCorner: CGFloat
+    public var districtCorner: CGFloat
+    public var districtPadding: CGFloat
+    public var districtHeader: CGFloat
+    public var hostPadding: CGFloat
+    public var hostHeader: CGFloat
+    public var districtGap: CGFloat
+    public var hostGap: CGFloat
+    /// Tiles are drawn from this zoom in; further out, a pipeline is its plate.
+    public var tilesFrom: CGFloat
+    /// When hosts are narrower than this on screen on average, in points, they become nodes of the mesh, all at once.
+    public var nodeBelow: CGFloat
+    /// A node's size on screen, in points.
+    public var nodeSize: CGFloat
+
+    public static let standard = ContinuumLook(
+        hostFill: StageColor(hex: 0x1A1D24, alpha: 0.72), hostStroke: StageColor(hex: 0x5B6AA0), unreachable: StageColor(hex: 0x4A4E58),
+        districtFill: StageColor(hex: 0x20242D, alpha: 0.85), districtStroke: StageColor(hex: 0x3C4457),
+        cool: StageColor(hex: 0x39D5FF), warm: StageColor(hex: 0xFFC23D), hot: StageColor(hex: 0xFF4D5E),
+        spare: StageColor(hex: 0x6CFF8E), meterTrack: StageColor(hex: 0x2A2F3A),
+        hostTitleFont: StageFont(size: 17, weight: .semibold), titleFont: StageFont(size: 14, weight: .semibold),
+        detailFont: StageFont(size: 11.5, weight: .medium, monospacedDigits: true),
+        hostCorner: 40, districtCorner: 22, districtPadding: 36, districtHeader: 76, hostPadding: 70, hostHeader: 70,
+        districtGap: 80, hostGap: 520, tilesFrom: 0.11, nodeBelow: 120, nodeSize: 56
+    )
+
+    /// A plate's colour for a load from 0 (idle) to 1 (at its limit).
+    public func heat(_ load: Double) -> StageColor {
+        let t = Float(min(max(load, 0), 1))
+        return t < 0.5 ? cool.mixed(with: warm, by: t * 2) : warm.mixed(with: hot, by: (t - 0.5) * 2)
     }
 }
 

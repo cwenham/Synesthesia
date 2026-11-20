@@ -32,7 +32,7 @@ struct HoverCardTests {
         let continuum = Continuum()
         let host = continuum.add(host: "sim", kind: .simulated)
         let link = SimulatedHost(name: "sim", latency: .milliseconds(1))
-        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(40), listEvery: .milliseconds(40))) { link }
+        let session = HostSession(host: host, settings: .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1)) { link }
         session.start()
         while host.pipeline(name)?.links.first?.isCounted != true || (host.pipeline(name)?.modules.first?.rates[.emitted] ?? 0) == 0 {
             try await Task.sleep(for: .milliseconds(10))

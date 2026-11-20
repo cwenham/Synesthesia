@@ -16,10 +16,12 @@ public protocol Viewer: AnyObject {
     var continuum: Continuum { get }
     /// What's selected in the sidebar: a host or a pipeline.
     var selection: MeepAddress? { get }
-    /// The stage the canvas is drawing, if a pipeline is showing.
+    /// The stage of the pipeline the canvas is about, if it's at the pipeline level.
     var stage: PipelineStage? { get }
-    /// Selects a host or pipeline in the sidebar.
-    func select(_ address: MeepAddress)
+    /// The whole Continuum as the canvas draws it, at every level.
+    var canvas: ContinuumStage? { get }
+    /// Selects a host or pipeline in the sidebar, which moves the canvas to it; nil shows the whole mesh.
+    func select(_ address: MeepAddress?)
     /// Opens the window if it's closed, without taking the person's focus.
     func reveal()
     /// The canvas as it's drawn now, if a pipeline is showing.
@@ -104,11 +106,12 @@ public enum ContinuumTools {
     static func listContinuum(_ viewer: Viewer) -> Tool {
         Tool(
             name: "list_continuum", title: "List the Continuum",
-            description: "Lists the hosts Synesthesia follows, whether each can be reached, and their pipelines with their state and messages a second. Also says what's selected in the app.",
+            description: "Lists the hosts Synesthesia follows, whether each can be reached and how (this Mac's daemon, SSH, simulated), each host's ID, roll-up (messages a second in, processor cores busy and spare, clock offset) and connection (bytes a second against its budget), and their pipelines with their state, rates and cores. Also says what's selected in the app and the canvas's zoom level (mesh, host or pipeline).",
             inputSchema: ["type": "object", "properties": [:]]
         ) { _ in
             .json([
                 "selected": viewer.selection.map { .string($0.description) } ?? .null,
+                "zoomLevel": viewer.canvas.map { .string($0.level.rawValue) } ?? .null,
                 "hosts": .array(viewer.continuum.hosts.map { host in
                     var entry: [String: JSONValue] = [
                         "address": .string(host.address.description), "title": .string(host.title),
@@ -118,13 +121,41 @@ public enum ContinuumTools {
                                 "address": .string(pipeline.address.description), "state": .string(pipeline.state.rawValue),
                                 "modules": .number(pipeline.modules.count),
                             ]
-                            if host.isReachable, pipeline.state.isLive { item["messagesPerSecond"] = .rounded(pipeline.throughput, places: 1) }
+                            if host.isReachable, pipeline.state.isLive {
+                                item["messagesPerSecond"] = .rounded(pipeline.throughput, places: 1)
+                                item["inPerSecond"] = .rounded(pipeline.intake, places: 1)
+                                item["coresHandling"] = .rounded(pipeline.load, places: 3)
+                            }
                             if pipeline.restarts > 0 { item["restarts"] = .number(pipeline.restarts) }
                             if let reason = pipeline.reason { item["reason"] = .string(reason) }
                             return .object(item)
                         }),
                     ]
                     if let info = host.info { entry["meepVersion"] = .string(info.version) }
+                    entry["reachedBy"] = .string(host.route.map { "\(host.kind.summary), \($0)" } ?? host.kind.summary)
+                    if let identity = host.identity {
+                        entry["id"] = .string(identity.id)
+                        if !identity.names.isEmpty { entry["names"] = .array(identity.names.map { .string($0) }) }
+                    }
+                    if host.isReachable {
+                        var rollUp: [String: JSONValue] = [
+                            "inPerSecond": .rounded(host.intake, places: 1), "coresHandling": .rounded(host.load, places: 3),
+                        ]
+                        if let headroom = host.headroom {
+                            rollUp["cores"] = .number(headroom.cores)
+                            rollUp["spareShare"] = .rounded(headroom.spare)
+                            if let daemon = headroom.daemon { rollUp["daemonCores"] = .rounded(daemon, places: 3) }
+                        }
+                        if let offset = host.clockOffset { rollUp["clockAheadSeconds"] = .rounded(offset, places: 3) }
+                        entry["rollUp"] = .object(rollUp)
+                        var connection: [String: JSONValue] = ["subscribed": .bool(host.traffic.subscribed)]
+                        connection["budgetBytesPerSecond"] = host.budget.map { .rounded($0, places: 0) } ?? .null
+                        if host.traffic.subscribed {
+                            connection["bytesPerSecond"] = .rounded(host.traffic.bandwidth, places: 0)
+                            if host.traffic.slowdown > 1 { connection["slowedDown"] = .rounded(host.traffic.slowdown, places: 1) }
+                        }
+                        entry["connection"] = .object(connection)
+                    }
                     return .object(entry)
                 }),
             ])
@@ -139,6 +170,7 @@ public enum ContinuumTools {
         ) { arguments in
             let (host, pipeline, _) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
             let current = host.isReachable && pipeline!.state.isLive
+            if current { await freshen(pipeline!) }
             return .json(describe(pipeline!, host: host, current: current))
         }
     }
@@ -261,8 +293,12 @@ public enum ContinuumTools {
                 throw ToolError("\(pipeline.address) isn't running on a host that can be reached, so its counts aren't changing.")
             }
             let seconds = min(max(arguments["seconds"]?.number ?? 5, 1), 60)
+            // A pipeline not shown in detail has only its totals followed: its modules' counts are asked for, and
+            // waited for, before the period starts.
+            let followed = pipeline.detail >= .modules
             pipeline.watchers += 1
             defer { pipeline.watchers -= 1 }
+            if !followed { await waitForModuleCounts(pipeline) }
             let before = Counts(pipeline)
             let start = ProcessInfo.processInfo.systemUptime
             try await Task.sleep(for: .seconds(seconds))
@@ -308,13 +344,16 @@ public enum ContinuumTools {
     static func describeView(_ viewer: Viewer) -> Tool {
         Tool(
             name: "describe_view", title: "Describe what the canvas shows",
-            description: "What the app's canvas is showing, as structure: the pipeline, the zoom, each tile's place on screen and its label, and on each wire whether particles show single messages or a rate. When the Meeplang is open beside it, says whether it's saved, whether it loads, and its problems; the canvas then draws the text as typed, with modules not running yet marked. Cheaper and more exact than capture_view.",
+            description: "What the app's canvas is showing, as structure. The canvas zooms continuously from the mesh of hosts, to a host's pipelines drawn as districts, to one pipeline's tiles: it says the level, what's in focus, and each host and pipeline on screen with its place and roll-up, and how much detail each is asked for. At the pipeline level it also gives each tile's place and label, and on each wire whether particles show single messages or a rate. When the Meeplang is open beside it, says whether it's saved, whether it loads, and its problems; the canvas then draws the text as typed, with modules not running yet marked. Cheaper and more exact than capture_view.",
             inputSchema: ["type": "object", "properties": [:]]
         ) { _ in
             var result: [String: JSONValue] = ["selected": viewer.selection.map { .string($0.description) } ?? .null]
+            if let canvas = viewer.canvas, canvas.currentViewSize.width > 0 {
+                result["zoom"] = describe(canvas)
+            }
             guard let stage = viewer.stage, stage.currentViewSize.width > 0 else {
                 result["canvas"] = .null
-                result["note"] = "No pipeline is on the canvas. Use show with a pipeline's address."
+                if viewer.canvas == nil { result["note"] = "The canvas isn't showing. Use show with an address." }
                 return .json(.object(result))
             }
             result["canvas"] = describe(stage)
@@ -340,8 +379,8 @@ public enum ContinuumTools {
             description: "An image of the canvas as it's drawn now. describe_view is cheaper and gives exact numbers; use this to see how things look.",
             inputSchema: ["type": "object", "properties": [:]]
         ) { _ in
-            guard viewer.stage != nil, let image = viewer.canvasImage(), let png = png(image) else {
-                throw ToolError("No pipeline is on the canvas. Use show with a pipeline's address.")
+            guard let image = viewer.canvasImage(), let png = png(image) else {
+                throw ToolError("The canvas isn't showing. Use show with an address to open the window.")
             }
             return ToolResult([.png(png), .text("The canvas at \(image.width)×\(image.height) pixels.")])
         }
@@ -352,10 +391,15 @@ public enum ContinuumTools {
     static func show(_ viewer: Viewer) -> Tool {
         Tool(
             name: "show", title: "Show something in the app",
-            description: "Points the app at an address so the person can see what you mean: a host or pipeline is selected in the sidebar; a module's pipeline is opened on the canvas, which moves to the module and selects it.",
+            description: "Points the app at an address so the person can see what you mean: the canvas zooms to it and it's selected in the sidebar. A host is shown with its pipelines as districts; a pipeline whole, with its tiles; a module close up, selected. meep:// alone, with no host, shows the whole mesh of hosts.",
             inputSchema: ["type": "object", "properties": ["address": addressSchema], "required": ["address"]],
             readOnly: false
         ) { arguments in
+            if let text = arguments["address"]?.string?.trimmingCharacters(in: .whitespaces), ["meep://", "meep:///", "mesh"].contains(text) {
+                viewer.reveal()
+                viewer.select(nil)
+                return .json(["shown": "the whole mesh"])
+            }
             let (host, pipeline, module) = try resolve(arguments["address"], in: viewer, needsPipeline: false)
             viewer.reveal()
             guard let pipeline else {
@@ -564,6 +608,7 @@ public enum ContinuumTools {
         if let reason = pipeline.reason { result["reason"] = .string(reason) }
         if pipeline.restarts > 0 { result["restarts"] = .number(pipeline.restarts) }
         if !pipeline.warnings.isEmpty { result["warnings"] = .array(pipeline.warnings.map { .string($0) }) }
+        if current { result["rollUp"] = rollUp(pipeline) }
         let graph = pipeline.graph
         result["modules"] = .array(pipeline.modules.map { module in
             let written = graph?.modules.first { $0.key == module.key }
@@ -581,6 +626,13 @@ public enum ContinuumTools {
                 if written.span.file != pipeline.path { entry["file"] = .string(written.span.file) }
             }
             entry["counts"] = counts(module.counts, role: module.role)
+            if current, module.load > 0.0005 { entry["busy"] = .rounded(module.load, places: 3) }
+            if let timing = module.timing, let median = timing.quantile(0.5) {
+                entry["handlingSeconds"] = ["p50": .number(median), "p99": .number(timing.quantile(0.99) ?? median)]
+            }
+            if let traffic = module.traffic, !traffic.isEmpty {
+                entry["bytes"] = ["received": .number(traffic["received"]), "sent": .number(traffic["sent"])]
+            }
             if current {
                 let rates = CountKind.allCases.compactMap { kind -> (String, JSONValue)? in
                     let rate = module.rates[kind]
@@ -607,6 +659,52 @@ public enum ContinuumTools {
             return .object(entry)
         })
         return .object(result)
+    }
+
+    /// A pipeline the canvas shows only as a plate, or not at all, has only its totals followed (design, section 4):
+    /// asks for its modules' counts for a moment, and waits for them, so what's described is current.
+    static func freshen(_ pipeline: MeepPipeline) async {
+        guard pipeline.detail < .modules else { return }
+        pipeline.watchers += 1
+        defer { pipeline.watchers -= 1 }
+        await waitForModuleCounts(pipeline)
+    }
+
+    /// Waits a moment for every module's counts to come again, and once more, for rates.
+    static func waitForModuleCounts(_ pipeline: MeepPipeline) async {
+        let before = pipeline.modules.map(\.lastRead)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2.5
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            let now = pipeline.modules.map(\.lastRead)
+            if !now.isEmpty, now.count == before.count, zip(now, before).allSatisfy({ $0 != nil && $0 != $1 }) {
+                // Two readings make a rate.
+                try? await Task.sleep(for: .milliseconds(400))
+                return
+            }
+        }
+    }
+
+    /// A pipeline's roll-up: what comes in, how busy it is, and its handling times, as Claude reads them.
+    static func rollUp(_ pipeline: MeepPipeline) -> JSONValue {
+        var entry: [String: JSONValue] = [
+            "inPerSecond": .rounded(pipeline.intake, places: 1), "messagesPerSecond": .rounded(pipeline.throughput, places: 1),
+            "coresHandling": .rounded(pipeline.load, places: 3),
+        ]
+        if pipeline.errorRate > 0 { entry["failingPerSecond"] = .rounded(pipeline.errorRate) }
+        if pipeline.queued > 0 { entry["queued"] = .number(pipeline.queued) }
+        let bandwidth = pipeline.bandwidth
+        if bandwidth.received + bandwidth.sent > 0 {
+            entry["bytesPerSecond"] = ["received": .rounded(bandwidth.received, places: 0), "sent": .rounded(bandwidth.sent, places: 0)]
+        }
+        let timing = pipeline.timing
+        if let median = timing.quantile(0.5), let tail = timing.quantile(0.99) {
+            entry["handlingSeconds"] = ["p50": .number(median), "p99": .number(tail), "messages": .number(timing.count)]
+        }
+        if let busiest = pipeline.modules.max(by: { $0.load < $1.load }), busiest.load > 0.001 {
+            entry["busiest"] = ["address": .string(pipeline.address.module(busiest.key).description), "busy": .rounded(busiest.load, places: 3)]
+        }
+        return .object(entry)
     }
 
     static func counts(_ stats: ModuleStats, role: VerbRole?) -> JSONValue {
@@ -691,6 +789,48 @@ public enum ContinuumTools {
             case .wire(let key): result["hovered"] = .string("wire \(key)")
             }
         }
+        return .object(result)
+    }
+
+    /// The zoom: its level, its focus, and each host and pipeline on screen with where it's drawn.
+    static func describe(_ canvas: ContinuumStage) -> JSONValue {
+        let size = canvas.currentViewSize
+        let camera = canvas.currentCamera
+        let screen = CGRect(origin: .zero, size: size)
+        func rect(_ r: CGRect) -> JSONValue {
+            [.rounded(r.minX, places: 0), .rounded(r.minY, places: 0), .rounded(r.width, places: 0), .rounded(r.height, places: 0)]
+        }
+        var hosts: [JSONValue] = []
+        for host in canvas.continuum.hosts {
+            guard let frame = canvas.frame(of: host.address) else { continue }
+            let shown = camera.viewRect(frame, in: size)
+            guard shown.intersects(screen) else { continue }
+            let asNode = canvas.drawsNodes
+            var entry: [String: JSONValue] = [
+                "address": .string(host.address.description), "frame": rect(shown), "drawnAs": .string(asNode ? "node" : "plate"),
+                "line": .string(HostSummary(host).line),
+            ]
+            if !asNode {
+                entry["pipelines"] = .array(host.pipelines.compactMap { pipeline in
+                    guard let district = canvas.frame(of: pipeline.address) else { return nil }
+                    let drawn = camera.viewRect(district, in: size)
+                    guard drawn.intersects(screen) else { return nil }
+                    return [
+                        "address": .string(pipeline.address.description), "frame": rect(drawn),
+                        "drawnAs": .string(camera.scale >= canvas.theme.continuum.tilesFrom ? "tiles" : "district"),
+                        "detailAskedFor": .string(String(describing: pipeline.detail)),
+                        "line": .string(PipelineSummaryLine(pipeline, current: host.isReachable).line),
+                    ]
+                })
+            }
+            hosts.append(.object(entry))
+        }
+        var result: [String: JSONValue] = [
+            "level": .string(canvas.level.rawValue), "scale": .rounded(camera.scale, places: 3),
+            "viewSize": [.rounded(size.width, places: 0), .rounded(size.height, places: 0)], "hostsOnScreen": .array(hosts),
+        ]
+        result["focus"] = canvas.focus.map { .string($0.description) } ?? .null
+        if let hovered = canvas.hovered { result["hovered"] = .string(hovered.address.description) }
         return .object(result)
     }
 

@@ -49,8 +49,13 @@ public actor DaemonConnection: HostLink {
         reading = Task { [socket] in
             do {
                 while let message = try await socket.receive() {
-                    guard case .text(let text) = message else { continue }
-                    self.dispatch(Data(text.utf8))
+                    switch message {
+                    case .text(let text):
+                        self.dispatch(Data(text.utf8))
+                    case .binary(let data):
+                        // A subscription asked for CBOR sends its events as binary frames, read here as JSON.
+                        if let json = try? CBOR.json(from: data) { self.dispatch(json) }
+                    }
                 }
                 self.fail(.disconnected("The daemon closed the connection."))
             } catch {
@@ -69,7 +74,7 @@ public actor DaemonConnection: HostLink {
         } else if let status = header.status {
             if let answer = answers.removeValue(forKey: id) {
                 answer.resume(returning: frame)
-            } else if let stream = streams.removeValue(forKey: id) {
+            } else if status >= 400, let stream = streams.removeValue(forKey: id) {
                 // A stream the daemon refused, such as stats for a pipeline that has stopped, gets an answer
                 // instead of events.
                 let problem = try? MeepJSON.decoder.decode(AnswerFrame<Problem>.self, from: frame)
@@ -91,6 +96,15 @@ public actor DaemonConnection: HostLink {
         fail(.disconnected("The connection was closed."))
         reading?.cancel()
         await socket.close()
+        for closing in whenClosed { closing() }
+        whenClosed = []
+    }
+
+    private var whenClosed: [@Sendable () -> Void] = []
+
+    /// Runs `body` when the connection is closed, as for closing the tunnel it runs through.
+    public func onClose(_ body: @escaping @Sendable () -> Void) {
+        whenClosed.append(body)
     }
 
     // MARK: Requests
@@ -176,6 +190,40 @@ public actor DaemonConnection: HostLink {
     private func cancel(_ id: Int) async {
         guard streams.removeValue(forKey: id) != nil, gone == nil else { return }
         try? await socket.send(text: #"{"id":\#(id),"cancel":true}"#)
+    }
+
+    // MARK: Subscriptions
+
+    /// Starts a subscription (`POST /subscribe`), returning its id and its frames.
+    fileprivate func openSubscription(_ plan: JSONValue) async throws -> (id: Int, frames: AsyncThrowingStream<Data, any Error>) {
+        if let gone { throw gone }
+        let id = nextID
+        nextID += 1
+        let (frames, continuation) = AsyncThrowingStream<Data, any Error>.makeStream()
+        streams[id] = continuation
+        continuation.onTermination = { _ in Task { await self.cancel(id) } }
+        do {
+            let frame = RequestFrame(id: id, method: "POST", path: "/subscribe", json: plan, text: nil)
+            try await socket.send(text: String(decoding: JSONEncoder().encode(frame), as: UTF8.self))
+        } catch {
+            streams.removeValue(forKey: id)?.finish(throwing: HostError.disconnected(error.localizedDescription))
+            throw HostError.disconnected(error.localizedDescription)
+        }
+        return (id, frames)
+    }
+
+    /// Sends a stream's control message, such as a subscription's change: `{"id": 3, "change": …}`.
+    fileprivate func control(_ id: Int, _ message: [String: JSONValue]) async throws {
+        if let gone { throw gone }
+        guard streams[id] != nil else { throw HostError.disconnected("The subscription has ended.") }
+        var object = message
+        object["id"] = .number(id)
+        try await socket.send(text: JSONValue.object(object).text())
+    }
+
+    public func subscribe(_ plan: SubscriptionPlan) async throws -> any HostSubscription {
+        let (id, frames) = try await openSubscription(plan.json)
+        return DaemonSubscription(connection: self, id: id, plan: plan, frames: frames)
     }
 
     // MARK: HostLink
@@ -358,4 +406,63 @@ struct EventFrame<Payload: Decodable>: Decodable {
 
 struct EndReason: Decodable {
     var reason: String
+}
+
+/// A subscription on a daemon's connection: its events, read from JSON or CBOR frames, and its changes, sent as merge
+/// patches against the last plan sent.
+final class DaemonSubscription: HostSubscription {
+    let events: AsyncThrowingStream<SubscriptionEvent, any Error>
+    private let connection: DaemonConnection
+    private let id: Int
+    private let sent: PlanBox
+
+    /// The last plan sent, so a change is sent as only what moved.
+    private actor PlanBox {
+        var plan: SubscriptionPlan
+        init(_ plan: SubscriptionPlan) { self.plan = plan }
+        func swap(_ new: SubscriptionPlan) -> SubscriptionPlan {
+            defer { plan = new }
+            return plan
+        }
+    }
+
+    init(connection: DaemonConnection, id: Int, plan: SubscriptionPlan, frames: AsyncThrowingStream<Data, any Error>) {
+        self.connection = connection
+        self.id = id
+        sent = PlanBox(plan)
+        events = AsyncThrowingStream { continuation in
+            let reading = Task {
+                do {
+                    for try await frame in frames {
+                        let header = try MeepJSON.decoder.decode(FrameHeader.self, from: frame)
+                        if header.event == "end" { break }
+                        if case .update(var update)? = try MeepJSON.subscriptionEvent(from: frame) {
+                            update.received = Date()
+                            continuation.yield(.update(update))
+                        } else if let event = try MeepJSON.subscriptionEvent(from: frame) {
+                            continuation.yield(event)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in reading.cancel() }
+        }
+    }
+
+    func change(to plan: SubscriptionPlan) async throws {
+        let old = await sent.swap(plan)
+        guard let patch = plan.patch(from: old) else { return }
+        try await connection.control(id, ["change": patch])
+    }
+
+    func resend() async throws {
+        try await connection.control(id, ["resend": true])
+    }
+
+    func cancel() async {
+        try? await connection.control(id, ["cancel": true])
+    }
 }

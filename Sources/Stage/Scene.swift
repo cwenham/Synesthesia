@@ -225,8 +225,44 @@ public struct StageText: Sendable, Equatable {
     }
 }
 
+/// A plate under what's drawn: a host or a pipeline as the Continuum shows them when zoomed out (design, section 2), a
+/// rounded rectangle, or a circle when its corners are round enough, with an outline whose width is in points.
+public struct StageRegion: Sendable, Equatable {
+    public var id: String
+    public var frame: CGRect
+    /// In world units; half the shorter side makes a circle or a pill.
+    public var cornerRadius: CGFloat
+    public var fill: StageColor
+    public var stroke: StageColor
+    /// In points, the same at every zoom.
+    public var strokeWidth: Float
+    public var isDashed: Bool
+    public var isHovered: Bool
+    public var isSelected: Bool
+    /// A glow round it, from 0 to 1, such as for a host that's busy.
+    public var glow: Float
+
+    public init(
+        id: String, frame: CGRect, cornerRadius: CGFloat, fill: StageColor, stroke: StageColor, strokeWidth: Float = 1.5,
+        isDashed: Bool = false, isHovered: Bool = false, isSelected: Bool = false, glow: Float = 0
+    ) {
+        self.id = id
+        self.frame = frame
+        self.cornerRadius = cornerRadius
+        self.fill = fill
+        self.stroke = stroke
+        self.strokeWidth = strokeWidth
+        self.isDashed = isDashed
+        self.isHovered = isHovered
+        self.isSelected = isSelected
+        self.glow = glow
+    }
+}
+
 /// Everything to draw in one frame, independent of the renderer.
 public struct StageSnapshot: Sendable {
+    /// Plates of hosts and pipelines, drawn first.
+    public var regions: [StageRegion] = []
     public var tiles: [StageTile] = []
     public var wires: [StageWire] = []
     /// Streams along wires, drawn under the tiles.
@@ -236,6 +272,8 @@ public struct StageSnapshot: Sendable {
     /// Streams and particles drawn over the tiles, such as those ending inside one.
     public var overStreams: [ParticleStream] = []
     public var overParticles: [StageParticle] = []
+    /// Plates behind labels, drawn over the tiles and under the text, so a label stays readable over what it covers.
+    public var labelPlates: [StageRegion] = []
     public var texts: [StageText] = []
     public var camera = Camera()
     /// The look to draw everything with.

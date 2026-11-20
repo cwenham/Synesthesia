@@ -48,7 +48,7 @@ struct SavedProbeTests {
         let ticker = spec
         let continuum = Continuum()
         let host = continuum.add(host: "local", kind: .local(socketPath: "/nowhere"))
-        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(50), listEvery: .milliseconds(50))) {
+        let session = HostSession(host: host, settings: .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1)) {
             SimulatedHost(name: "local", latency: .milliseconds(1), pipelines: [ticker])
         }
         session.start()
@@ -86,7 +86,7 @@ struct DropTests {
     private func editing() async throws -> (PipelineEditor, PipelineStage, Workspace, HostSession) {
         let continuum = Continuum()
         let host = continuum.add(host: "sim", kind: .simulated)
-        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(50), listEvery: .milliseconds(50))) {
+        let session = HostSession(host: host, settings: .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1)) {
             SimulatedHost(name: "sim", latency: .milliseconds(1))
         }
         session.start()

@@ -8,6 +8,7 @@ import Simulation
 import Stage
 import SwiftUI
 import SynesthesiaUI
+import Transport
 
 @main
 struct SynesthesiaApp: App {
@@ -18,6 +19,8 @@ struct SynesthesiaApp: App {
     @AppStorage(CanvasLook.starfieldKey) private var showsStarfield = true
 
     init() {
+        // Writing to a tunnel or language server that has ended fails rather than ending the app.
+        signal(SIGPIPE, SIG_IGN)
         // Hosts are followed and MCP is served from launch, whether or not the window is open: synesthesia-mcp may
         // start the app in the background.
         AppModel.shared.start()
@@ -39,6 +42,7 @@ struct SynesthesiaApp: App {
             ContinuumView(workspace: model.workspace)
                 .environment(\.canvasSurface, MacCanvas.provider)
                 .environment(\.codeTextSurface, MacCodeText.provider)
+                .environment(\.hostManaging, model)
                 .frame(minWidth: 760, minHeight: 520)
                 .onChange(of: showsSimulatedHost) { _, shows in model.showSimulatedHost(shows) }
                 .onChange(of: model.workspace.showsText) { _, shows in showsText = shows }
@@ -122,24 +126,27 @@ struct TextCommands: View {
 
 /// Zooming the canvas in the focused window.
 struct ZoomCommands: View {
-    @FocusedValue(\.pipelineStage) private var stage
+    @FocusedValue(\.continuumStage) private var canvas
 
     var body: some View {
-        Button("Zoom In") { stage?.step(zoomingIn: true) }
+        Button("Zoom In") { canvas?.step(zoomingIn: true) }
             .keyboardShortcut("=", modifiers: .command)
-            .disabled(stage == nil)
-        Button("Zoom Out") { stage?.step(zoomingIn: false) }
+            .disabled(canvas == nil)
+        Button("Zoom Out") { canvas?.step(zoomingIn: false) }
             .keyboardShortcut("-", modifiers: .command)
-            .disabled(stage == nil)
-        Button("Zoom to Fit") { stage?.fit() }
+            .disabled(canvas == nil)
+        Button("Zoom to Fit") { canvas?.fit() }
             .keyboardShortcut("0", modifiers: .command)
-            .disabled(stage == nil)
+            .disabled(canvas == nil)
+        Button("Show Every Host") { canvas?.show(nil) }
+            .keyboardShortcut("0", modifiers: [.command, .shift])
+            .disabled(canvas == nil)
     }
 }
 
 /// The Continuum this Mac starts with, and the sessions keeping its hosts up to date.
 @MainActor @Observable
-final class AppModel {
+final class AppModel: HostManaging {
     /// The app's one model, made at launch.
     static let shared = AppModel()
 
@@ -150,6 +157,9 @@ final class AppModel {
     @ObservationIgnored private let mcp = MCPService()
     /// The `meep lsp` the text uses, once started.
     @ObservationIgnored private let languageProcess = ProcessBox()
+    /// The hosts the person added, and budgets they set, kept between runs.
+    @ObservationIgnored private var store = HostStore.load()
+    @ObservationIgnored private let tunnels = SSHTunnelProvider()
 
     private init() {
         continuum = Continuum()
@@ -179,13 +189,14 @@ final class AppModel {
         let socket = DaemonConnection.defaultSocketPath
         let local = continuum.add(host: "local", title: "This Mac", kind: .local(socketPath: socket))
         follow(local) { try await DaemonConnection.connect(socketPath: socket) }
+        for remote in store.remotes { followRemote(remote) }
     }
 
     /// Adds or removes the pretend host, which shows what the views do with busier pipelines than you may have.
     func showSimulatedHost(_ shows: Bool) {
         if shows, sessions["simulated"] == nil {
             let host = continuum.add(host: "simulated", title: "Simulated", kind: .simulated)
-            follow(host) { SimulatedHost(name: "simulated") }
+            follow(host) { SimulatedHost(name: "simulated", clockSkew: .milliseconds(1200)) }
         } else if !shows, let session = sessions.removeValue(forKey: "simulated") {
             session.stop()
             continuum.remove(host: "simulated")
@@ -193,9 +204,66 @@ final class AppModel {
     }
 
     private func follow(_ host: MeepHost, connect: @escaping @Sendable () async throws -> any HostLink) {
+        if let saved = store.budgets[host.name] { host.budget = saved > 0 ? saved : nil }
         let session = HostSession(host: host, connect: connect)
         sessions[host.name] = session
         session.start()
+    }
+
+    // MARK: Hosts on other machines
+
+    /// Follows a host through a tunnel: ssh forwards its daemon's socket to one here, and the connection closes the
+    /// tunnel when it closes. A new tunnel is made each time the host is tried again.
+    private func followRemote(_ remote: HostStore.Remote) {
+        let host = continuum.add(host: remote.name, title: remote.title, kind: .remote(remote.target))
+        host.budget = remote.budget
+        let tunnels = tunnels
+        let target = remote.target
+        let session = HostSession(host: host) {
+            let tunnel = try await tunnels.open(target)
+            do {
+                let connection = try await DaemonConnection.open(over: tunnel.connect())
+                await connection.onClose { tunnel.close() }
+                await MainActor.run { host.route = tunnel.route }
+                if let expected = tunnel.expectedID, let id = try await connection.info().id, id != expected {
+                    // Another daemon answered than the one meep daemon socket named, as when one has just restarted
+                    // with a new ID; it's still the host's daemon, so follow it, but say so.
+                    await MainActor.run { host.route = (host.route ?? "") + "; its daemon's ID changed to \(id)" }
+                }
+                return connection
+            } catch {
+                tunnel.close()
+                throw error
+            }
+        }
+        sessions[host.name] = session
+        session.start()
+    }
+
+    func addRemoteHost(title: String, target: SSHTarget, budget: Double?) {
+        let taken = Set(continuum.hosts.map(\.name))
+        let remote = HostStore.Remote(name: HostStore.name(for: title, taken: taken), title: title, target: target, budget: budget)
+        store.remotes.append(remote)
+        try? store.save()
+        followRemote(remote)
+        workspace.selection = MeepAddress(host: remote.name)
+    }
+
+    func removeHost(_ host: MeepHost) {
+        sessions.removeValue(forKey: host.name)?.stop()
+        continuum.remove(host: host.name)
+        store.remotes.removeAll { $0.name == host.name }
+        try? store.save()
+        if workspace.selection?.host == host.name { workspace.selection = nil }
+    }
+
+    func budgetChanged(_ host: MeepHost) {
+        if let index = store.remotes.firstIndex(where: { $0.name == host.name }) {
+            store.remotes[index].budget = host.budget
+        } else {
+            store.budgets[host.name] = host.budget ?? 0
+        }
+        try? store.save()
     }
 }
 

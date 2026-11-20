@@ -2,12 +2,16 @@ import Foundation
 
 /// JSON as the daemon writes it. Its dates are .NET's `DateTimeOffset`: ISO 8601 with up to seven digits of
 /// fractional seconds and an offset, such as `2026-11-16T16:22:01.325359+00:00`, which Foundation's own ISO 8601
-/// parsing doesn't reliably take, so they're read here.
+/// parsing doesn't reliably take, so they're read here. A subscription writes them as microseconds since 1970
+/// instead, which are read too.
 public enum MeepJSON {
     public static var decoder: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
+            if let microseconds = try? container.decode(Int64.self) {
+                return Date(microsecondsSince1970: microseconds)
+            }
             let text = try container.decode(String.self)
             guard let date = parseDate(text) else {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "\(text) isn't an ISO 8601 date.")
@@ -88,5 +92,12 @@ public enum MeepJSON {
     /// Writes a date as the daemon reads them, in UTC with milliseconds.
     public static func formatDate(_ date: Date) -> String {
         Date.ISO8601FormatStyle(includingFractionalSeconds: true).format(date)
+    }
+}
+
+extension Date {
+    /// A time as a subscription writes it: microseconds since 1970 (UTC).
+    public init(microsecondsSince1970 microseconds: Int64) {
+        self.init(timeIntervalSince1970: Double(microseconds) / 1_000_000)
     }
 }

@@ -20,6 +20,7 @@ public final class StageRenderer {
     private let singles: MTLRenderPipelineState
     private let streams: MTLRenderPipelineState
     private let glyphs: MTLRenderPipelineState
+    private let regions: MTLRenderPipelineState
     private let atlas: GlyphAtlas
     private let shaper = TextShaper.shared
 
@@ -32,6 +33,7 @@ public final class StageRenderer {
         public var particles = 0
         public var streamed = 0
         public var glyphs = 0
+        public var regions = 0
     }
 
     public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice(), pixelFormat: MTLPixelFormat = .bgra8Unorm) {
@@ -65,6 +67,7 @@ public final class StageRenderer {
             singles = try pipeline("particle_vertex", "particle_fragment")
             streams = try pipeline("stream_vertex", "particle_fragment")
             glyphs = try pipeline("glyph_vertex", "glyph_fragment")
+            regions = try pipeline("region_vertex", "region_fragment")
         } catch {
             assertionFailure("The stage's shaders didn't compile: \(error)")
             return nil
@@ -97,6 +100,15 @@ public final class StageRenderer {
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&backgroundLook, length: MemoryLayout<BackgroundLook>.stride, index: 1)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+
+        // The plates of hosts and pipelines, under everything else.
+        let regionData = snapshot.regions.map(RegionInstance.init)
+        counts.regions = regionData.count
+        if let regionBuffer = buffer(regionData) {
+            encoder.setRenderPipelineState(regions)
+            bind(encoder, uniforms: &uniforms, buffer: regionBuffer)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: regionData.count)
+        }
 
         var tileLook = TileLook(theme)
         let tileData = snapshot.tiles.map { TileInstance($0, depth: theme.tiles.depth) }
@@ -147,6 +159,12 @@ public final class StageRenderer {
         }
         counts.streamed += drawStreams(snapshot.overStreams, encoder: encoder, uniforms: &uniforms)
         counts.particles += drawParticles(snapshot.overParticles, encoder: encoder, uniforms: &uniforms)
+        if let plateBuffer = buffer(snapshot.labelPlates.map(RegionInstance.init)) {
+            encoder.setRenderPipelineState(regions)
+            bind(encoder, uniforms: &uniforms, buffer: plateBuffer)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: snapshot.labelPlates.count)
+            counts.regions += snapshot.labelPlates.count
+        }
         counts.glyphs = drawTexts(snapshot.texts, camera: snapshot.camera, pixelScale: pixelScale, encoder: encoder, uniforms: &uniforms)
         encoder.endEncoding()
         lastCounts = counts
@@ -415,6 +433,28 @@ struct TileInstance {
         shape = tile.shape.rawValue
         flags = (tile.isHovered ? 1 : 0) | (tile.isSelected ? 2 : 0) | (tile.isDimmed ? 4 : 0) | (tile.isGhost ? 8 : 0)
         self.depth = Float(depth)
+    }
+}
+
+struct RegionInstance {
+    var fill: SIMD4<Float>
+    var stroke: SIMD4<Float>
+    var center: SIMD2<Float>
+    var halfSize: SIMD2<Float>
+    var radius: Float
+    var strokeWidth: Float
+    var flags: Int32
+    var glow: Float
+
+    init(_ region: StageRegion) {
+        fill = region.fill
+        stroke = region.stroke
+        center = SIMD2(Float(region.frame.midX), Float(region.frame.midY))
+        halfSize = SIMD2(Float(region.frame.width / 2), Float(region.frame.height / 2))
+        radius = Float(region.cornerRadius)
+        strokeWidth = region.strokeWidth
+        flags = (region.isDashed ? 1 : 0) | (region.isHovered ? 2 : 0) | (region.isSelected ? 4 : 0)
+        glow = region.glow
     }
 }
 

@@ -95,7 +95,7 @@ struct StageRendererTests {
         let continuum = Continuum()
         let host = continuum.add(host: "sim", kind: .simulated)
         let link = SimulatedHost(name: "sim", latency: .milliseconds(1))
-        let session = HostSession(host: host, settings: .init(statsEvery: .milliseconds(40), watchedStatsEvery: .milliseconds(40), listEvery: .milliseconds(40))) { link }
+        let session = HostSession(host: host, settings: .init(leastDetail: .full, replanEvery: .milliseconds(50), rateScale: 0.2)) { link }
         session.start()
         while host.pipeline(name)?.links.first?.isCounted != true {
             try await Task.sleep(for: .milliseconds(10))
@@ -115,7 +115,7 @@ struct StageRendererTests {
         return Pixels(image)
     }
 
-    private func save(_ image: CGImage, as name: String) {
+    func save(_ image: CGImage, as name: String) {
         guard let folder = ProcessInfo.processInfo.environment["SYNESTHESIA_SNAPSHOTS"] else { return }
         let url = URL(fileURLWithPath: folder).appendingPathComponent("\(name).png")
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { return }

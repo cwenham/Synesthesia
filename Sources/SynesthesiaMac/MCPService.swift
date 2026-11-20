@@ -5,6 +5,7 @@ import ContinuumKit
 import LanguageClient
 import MeepClient
 import Foundation
+import ImageIO
 import QuartzCore
 import Stage
 import SynesthesiaUI
@@ -23,7 +24,7 @@ final class AppViewer: Viewer {
     var selection: MeepAddress? { workspace.selection }
     var stage: PipelineStage? { workspace.stage }
 
-    func select(_ address: MeepAddress) {
+    func select(_ address: MeepAddress?) {
         workspace.selection = address
     }
 
@@ -113,10 +114,20 @@ final class AppViewer: Viewer {
         }
     }
 
+    var canvas: ContinuumStage? { workspace.canvas }
+
+    /// The canvas as it's drawn now. A window that's covered doesn't draw, so a canvas that hasn't been drawn yet is
+    /// drawn here, at the size of the window's canvas when it's known.
     func canvasImage() -> CGImage? {
-        guard let stage, let renderer = MacCanvas.renderer, stage.currentViewSize.width > 0 else { return nil }
-        let snapshot = stage.frame(at: CACurrentMediaTime(), viewSize: stage.currentViewSize)
-        return renderer.image(of: snapshot, size: stage.currentViewSize, pixelScale: NSScreen.main?.backingScaleFactor ?? 2)
+        let canvas = workspace.canvas
+        guard let renderer = MacCanvas.renderer else { return nil }
+        let size = canvas.currentViewSize.width > 0 ? canvas.currentViewSize : CGSize(width: 1400, height: 860)
+        let snapshot = canvas.frame(at: CACurrentMediaTime(), viewSize: size)
+        let image = renderer.image(of: snapshot, size: size, pixelScale: NSScreen.main?.backingScaleFactor ?? 2)
+        if let image, let folder = ProcessInfo.processInfo.environment["SYNESTHESIA_CAPTURES"], !folder.isEmpty {
+            WindowCapture.save(canvas: image, to: folder)
+        }
+        return image
     }
 }
 
@@ -160,5 +171,57 @@ final class MCPService {
 extension Bundle {
     var shortVersion: String {
         infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+    }
+}
+
+/// With `SYNESTHESIA_CAPTURES` naming a folder, each capture_view also saves the whole window there, as the app draws
+/// it: its views, with the Metal canvas drawn in where it is. It needs no screen recording, so a step can be looked at
+/// while the window is covered.
+@MainActor
+enum WindowCapture {
+    private static var count = 0
+
+    static func save(canvas: CGImage, to folder: String) {
+        count += 1
+        try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        write(canvas, to: URL(fileURLWithPath: folder).appendingPathComponent("canvas-\(count).png"))
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }), let content = window.contentView,
+              let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
+        content.cacheDisplay(in: content.bounds, to: rep)
+        guard let views = rep.cgImage else { return }
+        let scale = CGFloat(views.width) / content.bounds.width
+        guard let context = CGContext(
+            data: nil, width: views.width, height: views.height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+        // The window's own background first: parts drawn with vibrancy leave it clear.
+        var background = NSColor.windowBackgroundColor.cgColor
+        window.effectiveAppearance.performAsCurrentDrawingAppearance { background = NSColor.windowBackgroundColor.cgColor }
+        context.setFillColor(background)
+        context.fill(CGRect(x: 0, y: 0, width: views.width, height: views.height))
+        context.draw(views, in: CGRect(x: 0, y: 0, width: views.width, height: views.height))
+        if let view = find(CanvasMTKView.self, in: content) {
+            // The canvas's frame in the content view, with y up, as Core Graphics has it.
+            let frame = view.convert(view.bounds, to: content)
+            let flipped = content.isFlipped ? CGRect(x: frame.minX, y: content.bounds.height - frame.maxY, width: frame.width, height: frame.height) : frame
+            context.draw(canvas, in: CGRect(x: flipped.minX * scale, y: flipped.minY * scale, width: flipped.width * scale, height: flipped.height * scale))
+        }
+        if let whole = context.makeImage() {
+            write(whole, to: URL(fileURLWithPath: folder).appendingPathComponent("window-\(count).png"))
+        }
+    }
+
+    private static func find<T: NSView>(_ type: T.Type, in view: NSView) -> T? {
+        if let found = view as? T { return found }
+        for child in view.subviews {
+            if let found = find(type, in: child) { return found }
+        }
+        return nil
+    }
+
+    private static func write(_ image: CGImage, to url: URL) {
+        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { return }
+        CGImageDestinationAddImage(destination, image, nil)
+        CGImageDestinationFinalize(destination)
     }
 }
