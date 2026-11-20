@@ -33,6 +33,7 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 - **3,** in Meep2 2ef2d35, with 810c2fc, which pairs unchanged modules first when matching (Q186). Synesthesia's step 4 uses it.
 - **4,** in Meep2 0278da4, with 001842b, which pairs unchanged modules wherever they now are (Q195). Synesthesia's step 5 uses it. Both are on Meep2's `main`.
 - **5,** in Meep2 0c83a49, on `main`. Synesthesia's step 7 uses it.
+- **7,** in Meep2 a5de139, on `main`, with the answers to Q212–221 (report: `docs/Design/Chat/flows.md` there). Synesthesia's step 8 uses it. Sampled traces for tracers (Q219) wait for a prompt of their own, after step 8.
 
 **Not needed yet:** 6. Step 7 didn't need `meep run` to join a daemon, so it waits until it's wanted.
 
@@ -155,13 +156,40 @@ Refreshed 17 November 2026 for Synesthesia's step 7, against Meep2's `main` at 0
 
 ## 7. Flow evidence and the boundary
 
-> Synesthesia, the Swift app in `~/Projects/Synesthesia` (design in `docs/Design/architecture-round-1.md` there, section 3), draws flows between pipelines on different hosts, and the edge where Meep meets everything else. To draw flows that really happened, rather than guesses from matching addresses:
+Refreshed 20 November 2026 for Synesthesia's step 8, against Meep2's `main` at 0c83a49.
+
+> Synesthesia is the Swift app in `~/Projects/Synesthesia`. Its design is in `docs/Design/architecture-round-1.md` there (sections 3 and 4), and its latest step is in `docs/Design/step-7.md`. It now shows many daemons in one zoom, from a pipeline out to the mesh of hosts, using the subscription, digests and host identity from 0c83a49 (your report is `docs/Design/Chat/subscriptions.md`).
 >
-> - **Fetch and Send** add W3C `traceparent` and `baggage` (`meep.origin=<host>/<pipeline>/<module>`) to requests, but only to hosts known to run Meep, so origins don't leak to outside APIs. Work out how a daemon knows a host runs Meep: a reply header from Listen that Fetch remembers, configuration, or both.
-> - **Listen** counts arrivals by origin, with anything unmarked counted as from outside, and continues the trace from `traceparent`.
-> - **For the boundary:** Listen, Fetch and Send count messages, bytes and failures by remote endpoint (grouped by host name), so clients can see what talks to the outside, how much and how often it fails.
+> Its next step draws two things:
 >
-> TCP has no headers, so say what's possible there. If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
+> - **Flows** between pipelines, on one host or across hosts.
+> - **The boundary:** the endpoints outside Meep that Listens, Fetches and Sends talk to. They sit round the edge of the mesh, each with its rate and failures.
+>
+> Flows come in two kinds:
+>
+> - **Declared:** a Fetch's or Send's address matches a Listen's on a known host. This is a guess, drawn dashed, and it works before anything runs.
+> - **Observed:** messages that really crossed, drawn solid. These need evidence from Meep, which is what this prompt asks for.
+>
+> Add:
+>
+> - **Origins on what Meep sends to Meep:** Fetch and Send add W3C `traceparent`, and `baggage` with `meep.origin=<daemon ID>/<pipeline>/<module key>`. The daemon ID is the lasting one from 0c83a49, and the keys are the graph's, so a client can place an origin without matching names.
+>   - **Only to Meep hosts,** so that origins don't leak to outside APIs. Work out how a daemon knows the other end runs Meep: a reply header from Listen with its daemon's ID, which Fetch and Send remember for that address; configuration; or both. Say what happens on the first request, before the other end is known.
+>   - **Listen continues the trace** from `traceparent`, so that spans join up across hosts in a collector.
+> - **Arrivals by origin:** each Listen counts the messages and bytes it receives, by origin.
+>   - **Where:** in the subscription, as a new kind with its own rate, as `bytes` has.
+>   - **Unmarked arrivals** count as from outside, grouped by the client's host: its name where it has one, otherwise its address.
+>   - **A limit:** keep the number of origins a Listen tracks bounded, and say what happens past the bound.
+> - **Destinations by endpoint, for the boundary:** Fetch and Send count messages, bytes and failures by where they actually connected (the remote host and port, grouped by host name).
+>   - **Where:** in the subscription.
+>   - **Meep at the other end:** where the other end is a Meep host, include its daemon ID, so that an observed flow names both ends by ID.
+>   - **Bytes** stay counted for the module whose connection they cross (Q207).
+> - **Declared destinations:** where a Fetch's or Send's address is fixed when the pipeline starts, give it with the module, as `listening` gives a Listen's. Then Synesthesia can match declared flows without evaluating Meeplang itself. Say what you give for an address worked out for each message.
+> - **TCP, WebSocket and the other transports:** TCP has no headers, so say what's possible there, such as a first-frame handshake between Meep ends, or nothing. Say how WebSocket carries the origin.
+> - **Measured:** the cost of the headers, and of the counters by origin and by endpoint, on a busy Fetch to Listen pair, against `main`.
+>
+> Synesthesia also wants to draw real messages following their path (sampled traces, design section 4, "Tracers"). Say whether the traces from `traceparent` could give a client, through the daemon, a sample of messages' hops through modules and across hosts, and what that would cost. Build it only if it's small.
+>
+> If design questions come up, ask them in the numbered style of the design rounds, continuing from 212. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
 
 ## 8. The iPad: LSP over the daemon, mutual TLS
 
