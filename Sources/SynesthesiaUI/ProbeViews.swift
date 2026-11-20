@@ -19,8 +19,9 @@ struct ProbeDock: View {
             ContentUnavailableView {
                 Label("No probes", systemImage: "scope")
             } description: {
-                Text("Right-click a tile or a wire and choose Probe, to see the messages that go past.")
+                Text("Right-click a tile or a wire and choose Probe, or select a tile and use its probe button above the text, to see the messages that go past.")
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 0) {

@@ -255,6 +255,8 @@ struct PipelineDetailView: View {
                 ModuleTable(modules: pipeline.modules, current: host?.isReachable ?? false)
             }
         }
+        // The tabs stay at the top whichever is showing, though the probes' view may not fill the height.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(item: Binding(
             get: { workspace?.injection.flatMap { $0.pipeline == pipeline.id ? $0 : nil } },
             set: { if $0 == nil, let request = workspace?.injection { workspace?.finishInjection(request, .notSent) } }
