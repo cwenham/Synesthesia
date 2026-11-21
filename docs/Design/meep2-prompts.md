@@ -37,6 +37,8 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 
 **Not needed yet:** 6. Step 7 didn't need `meep run` to join a daemon, so it waits until it's wanted.
 
+**Found while building step 8, not needed by it:** a second daemon removes the running one's socket (below, after prompt 8).
+
 Prompts 1 and 2 touch the same files (`Contracts.cs`, the daemon, the runtime's stats), so run them one after the other, not side by side.
 
 ---
@@ -199,3 +201,10 @@ Refreshed 20 November 2026 for Synesthesia's step 8, against Meep2's `main` at 0
 > - **Mutual TLS** on a TCP listener for the daemon, with client certificates mapped to the same capabilities as tokens (observe, inject, control), and a way to enrol a new device.
 >
 > If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
+
+## A second daemon removes the running one's socket
+
+Found 21 November 2026 while building Synesthesia's step 8, against Meep2's `main` at a5de139. Not needed by any step; a bug to fix when convenient.
+
+> In Meep2 at a5de139, starting `meep daemon <files>` with a `MEEP_HOME` whose daemon is already running prints "A meep daemon is running already, on <socket>." and "meep daemon has stopped", and on its way out deletes the running daemon's socket file. The first daemon keeps running, but nothing can reach it: `meep daemon socket` says no daemon is running there, and `meep daemon stop` can't stop it. To reproduce: `MEEP_HOME=/tmp/x meep daemon a.meep &`, then `MEEP_HOME=/tmp/x meep daemon a.meep`, then `ls /tmp/x/daemon`. (It was first hit by typing `meep daemon status`, which reads `status` as a pipeline file; a hint that there's no `status` subcommand would help too.) Make a daemon that refuses to start leave the socket, and anything else in the folder, as it found them, and add a test with two daemons in one folder. If design questions come up, ask them in the numbered style of the design rounds, continuing from 222. Write a short report in `docs/Design/Chat/`. Don't commit; I'll review first.
+

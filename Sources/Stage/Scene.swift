@@ -70,6 +70,10 @@ public struct StageWire: Sendable, Equatable {
         case errors = 1
         /// Goes back against the flow, closing a cycle.
         case backward = 2
+        /// A flow between pipelines that's only declared: dashed, with dashes that keep their length on screen.
+        case declared = 3
+        /// A flow between pipelines, or to the boundary, that's been seen.
+        case flow = 4
     }
 
     public var id: String
@@ -79,15 +83,18 @@ public struct StageWire: Sendable, Equatable {
     public var lengths: [CGFloat]
     public var color: StageColor
     public var isHovered: Bool
+    /// Its width in pixels at 1×, when not the theme's for wires, such as a flow's, which grows with its rate.
+    public var width: Float?
 
     public var length: CGFloat { lengths.last ?? 0 }
 
-    public init(id: String, kind: Kind, points: [CGPoint], color: StageColor, isHovered: Bool = false) {
+    public init(id: String, kind: Kind, points: [CGPoint], color: StageColor, isHovered: Bool = false, width: Float? = nil) {
         self.id = id
         self.kind = kind
         self.points = points
         self.color = color
         self.isHovered = isHovered
+        self.width = width
         var lengths: [CGFloat] = [0]
         for (a, b) in zip(points, points.dropFirst()) { lengths.append(lengths.last! + hypot(b.x - a.x, b.y - a.y)) }
         self.lengths = lengths

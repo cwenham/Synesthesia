@@ -50,7 +50,8 @@ actor TestClient {
 final class TestViewer: Viewer {
     let continuum = Continuum()
     var selection: MeepAddress? {
-        didSet { openCanvas() }
+        // As the app's workspace does, the canvas moves only when the selection changes.
+        didSet { openCanvas(moving: selection != oldValue) }
     }
     private(set) var stage: PipelineStage?
     let canvasStage: ContinuumStage
@@ -58,13 +59,14 @@ final class TestViewer: Viewer {
     var images = 0
     private var session: HostSession?
 
-    /// Counts come every 40 ms for every pipeline, or with `slowly`, only totals unless a pipeline is watched.
-    init(slowly: Bool = false) async throws {
+    /// Counts come every 40 ms for every pipeline, or with `slowly`, only totals unless a pipeline is watched. Named
+    /// `simulated`, the demo's flows between its pipelines are known; with `flows`, every pipeline's places come too.
+    init(slowly: Bool = false, name: String = "sim", flows: Bool = false) async throws {
         canvasStage = ContinuumStage(continuum: continuum)
-        let host = continuum.add(host: "sim", title: "Simulated", kind: .simulated)
-        let link = SimulatedHost(name: "sim", latency: .milliseconds(1))
+        let host = continuum.add(host: name, title: "Simulated", kind: .simulated)
+        let link = SimulatedHost(name: name, latency: .milliseconds(1))
         let settings: HostSession.Settings = slowly ? .init(replanEvery: .milliseconds(50), rateScale: 2)
-            : .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1)
+            : .init(leastDetail: .modules, replanEvery: .milliseconds(50), rateScale: 0.1, leastFlowDetail: flows ? .close : .none)
         let session = HostSession(host: host, settings: settings) { link }
         session.start()
         self.session = session
@@ -116,10 +118,10 @@ final class TestViewer: Viewer {
 
     /// As the app's canvas does: zooms to what's selected, and draws once so it's laid out; a pipeline's stage is the
     /// one in focus.
-    private func openCanvas() {
+    private func openCanvas(moving: Bool = true) {
         let size = CGSize(width: 1000, height: 600)
         _ = canvasStage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: size)
-        canvasStage.show(selection, animated: false)
+        if moving { canvasStage.show(selection, animated: false) }
         _ = canvasStage.frame(at: ProcessInfo.processInfo.systemUptime, viewSize: size)
         guard let selection, let pipeline = continuum.pipeline(at: selection) else {
             stage = nil
@@ -317,6 +319,76 @@ struct ToolTests {
         let (_, _) = try await call(registry, "show", ["address": "meep://"])
         #expect(viewer.selection == nil)
         #expect(viewer.canvasStage.level == .mesh)
+    }
+
+    @Test func flowsAndTheBoundaryAreListed() async throws {
+        let viewer = try await TestViewer(name: "simulated", flows: true)
+        defer { viewer.stop() }
+        try await waitForFlows(viewer.continuum) { $0.flows.contains { $0.observed && $0.rate > 0 } && $0.boundary.count > 5 }
+        let (json, _) = try await call(ContinuumTools.registry(for: viewer), "list_continuum")
+        let flows = try #require(json?["flows"]?.array)
+        // Between districts on one host: the warehouse's Archive reaching the orders' Listen, declared and seen.
+        let archive = try #require(flows.first { $0["from"] == "meep://simulated/warehouse/m7" })
+        #expect(archive["to"] == "meep://simulated/orders/m1")
+        #expect(archive["declared"] == true && archive["observed"] == true)
+        #expect((archive["messagesPerSecond"]?.number ?? 0) > 0)
+        // The ticker's heartbeat, declared but never sent.
+        let heartbeat = try #require(flows.first { $0["from"] == "meep://simulated/ticker/m3" })
+        #expect(heartbeat["observed"] == false && heartbeat["known"] == "declared only: nothing seen yet")
+        let boundary = try #require(json?["boundary"]?.array)
+        let prices = try #require(boundary.first { $0["name"] == "prices.example.com" })
+        #expect(prices["kind"] == "outside" && prices["group"] == "example.com")
+        #expect(prices["links"]?.array?.first?["module"] == "meep://simulated/orders/m3")
+        #expect(boundary.contains { $0["kind"] == "otherMeep" })
+        #expect(boundary.contains { $0["kind"] == "pastLimit" })
+    }
+
+    @Test func aPipelinesPlacesAndFlowsAreDescribed() async throws {
+        let viewer = try await TestViewer(name: "simulated")
+        defer { viewer.stop() }
+        let host = try #require(viewer.continuum.host("simulated"))
+        let orders = try #require(host.pipeline("orders"))
+        // Places aren't followed until something asks: describing the pipeline asks for them while it waits.
+        #expect(orders.flowDetail == .none)
+        let describing = Task { await ContinuumTools.freshen(orders, on: host) }
+        try await waitFor { orders.flowDetail == .close }
+        try await waitFor { orders.module("m1")?.places.isEmpty == false && orders.module("m3")?.places.isEmpty == false }
+        await describing.value
+        let (json, _) = try await call(ContinuumTools.registry(for: viewer), "describe_pipeline", ["address": "meep://simulated/orders"])
+        let listen = try #require(json?["modules"]?.array?.first { $0["key"] == "m1" })
+        let arrivals = try #require(listen["arrivals"]?.array)
+        let shop = try #require(arrivals.first { $0["place"] == "203.0.113.7" })
+        #expect(shop["name"] == "shop-web-1.example.com")
+        #expect((shop["perSecond"]?["received"]?.number ?? 0) > 0)
+        #expect(arrivals.contains { $0["fromMeep"] == "simulated" }, "the warehouse's Archive, by origin")
+        let prices = try #require(json?["modules"]?.array?.first { $0["key"] == "m3" }?["destinations"]?.array?.first)
+        #expect(prices["place"] == "prices.example.com:443")
+        #expect(json?["flows"]?.array?.contains { $0["from"] == "meep://simulated/warehouse/m7" } == true)
+        #expect(json?["boundary"]?.array?.contains { $0["endpoint"] == "prices.example.com" } == true)
+    }
+
+    @Test func theViewDescribesFlowsAndTheBoundaryOnScreen() async throws {
+        let viewer = try await TestViewer(name: "simulated", flows: true)
+        defer { viewer.stop() }
+        try await waitForFlows(viewer.continuum) { $0.flows.contains { $0.observed } && $0.boundary.count > 5 }
+        let registry = ContinuumTools.registry(for: viewer)
+        let (shown, _) = try await call(registry, "show", ["address": "boundary"])
+        #expect(shown?["shown"] == "the boundary")
+        let size = CGSize(width: 1000, height: 600)
+        for step in 0..<3 { _ = viewer.canvasStage.frame(at: ProcessInfo.processInfo.systemUptime + Double(step), viewSize: size) }
+        #expect(viewer.canvasStage.level == .boundary)
+        let (view, _) = try await call(registry, "describe_view")
+        let zoom = try #require(view?["zoom"])
+        #expect(zoom["level"] == "boundary")
+        let endpoints = try #require(zoom["boundaryOnScreen"]?.array)
+        #expect(endpoints.contains { $0["name"] == "prices.example.com" && $0["line"]?.string?.contains("out") == true })
+        // Back to the mesh: the flows between its districts are on screen.
+        _ = try await call(registry, "show", ["address": "mesh"])
+        _ = viewer.canvasStage.frame(at: ProcessInfo.processInfo.systemUptime + 5, viewSize: size)
+        let (mesh, _) = try await call(registry, "describe_view")
+        #expect(mesh?["zoom"]?["level"] == "mesh")
+        let flows = try #require(mesh?["zoom"]?["flowsOnScreen"]?.array)
+        #expect(flows.contains { $0["from"] == "meep://simulated/warehouse/m7" && $0["drawn"] == "solid, with particles" })
     }
 
     @Test func hostsAreListedWithTheirRollUpsAndConnections() async throws {
@@ -559,3 +631,17 @@ func waitFor(seconds: Double = 20, _ condition: @MainActor () -> Bool) async thr
         try await Task.sleep(for: .milliseconds(10))
     }
 }
+
+/// Waits until the flow map satisfies `condition`, working it out only a few times a second.
+@MainActor
+func waitForFlows(_ continuum: Continuum, seconds: Double = 20, _ condition: (FlowMap) -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(seconds)
+    while !condition(continuum.flowMap()) {
+        guard ContinuousClock.now < deadline else {
+            Issue.record("Timed out waiting for flows.")
+            return
+        }
+        try await Task.sleep(for: .milliseconds(150))
+    }
+}
+

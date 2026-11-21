@@ -168,3 +168,47 @@ struct LiveDaemonTests {
         }
     }
 }
+
+/// Against two real daemons from Meep2 a5de139 or later, when `MEEP_TEST_FLOW_SOCKET` names the second's socket and a
+/// Fetch on the first (`MEEP_TEST_SOCKET`) reaches a Listen on it: their places, as the subscription sends them.
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["MEEP_TEST_SOCKET"] != nil && ProcessInfo.processInfo.environment["MEEP_TEST_FLOW_SOCKET"] != nil))
+struct LiveFlowEvidenceTests {
+    private var environment: [String: String] { ProcessInfo.processInfo.environment }
+
+    @Test func aFetchsDestinationNamesTheDaemonItReachesAndThatDaemonsListenNamesTheFetch() async throws {
+        let here = try await DaemonConnection.connect(socketPath: environment["MEEP_TEST_SOCKET"] ?? "")
+        let there = try await DaemonConnection.connect(socketPath: environment["MEEP_TEST_FLOW_SOCKET"] ?? "")
+        let hereID = try #require(try await here.info().id)
+        let thereInfo = try await there.info()
+        let thereID = try #require(thereInfo.id)
+        #expect(try await here.info().sending?.isEmpty == false, "GET / says where its Fetches send")
+        let plan = SubscriptionPlan(encoding: .cbor, host: .seconds(1), pipelines: ["*": PipelinePlan(arrivals: ["*": .milliseconds(200)], destinations: ["*": .milliseconds(200)])])
+
+        // Here: a destination that's Meep, named by the other daemon's ID.
+        var reached = false
+        for try await event in try await here.subscribe(plan).events {
+            if case .hello(let hello) = event { #expect(hello.counts.destinations == CountOrder.places) }
+            guard case .update(let update) = event else { continue }
+            if update.pipelines?.values.contains(where: { $0?.peers?.values.contains(thereID) == true }) == true {
+                reached = true
+                break
+            }
+        }
+        #expect(reached)
+
+        // There: an arrival by origin, naming this daemon.
+        var named = false
+        for try await event in try await there.subscribe(plan).events {
+            guard case .update(let update) = event else { continue }
+            let places = update.pipelines?.values.compactMap { $0?.arrivals }.flatMap { $0.values.compactMap { $0 } }.flatMap(\.keys) ?? []
+            if places.contains(where: { $0.hasPrefix("meep://\(hereID)/") }) {
+                named = true
+                break
+            }
+        }
+        #expect(named)
+        await here.close()
+        await there.close()
+    }
+}
+

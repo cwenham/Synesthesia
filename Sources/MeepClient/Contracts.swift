@@ -21,12 +21,15 @@ public struct DaemonInfo: Codable, Sendable, Equatable {
     public var addresses: [String]?
     /// Where its Listens are bound.
     public var listening: [ListenAddress]?
+    /// Where its Fetches and Sends send, as declared when their pipelines started (Meep2 a5de139).
+    public var sending: [SendAddress]?
     /// The daemon's clock when it answered, in microseconds since 1970 (UTC).
     public var clock: Int64?
 
     public init(
         version: String, processId: Int, socket: String, capabilities: [String], pipelines: [String], id: String? = nil,
-        names: [String]? = nil, addresses: [String]? = nil, listening: [ListenAddress]? = nil, clock: Int64? = nil
+        names: [String]? = nil, addresses: [String]? = nil, listening: [ListenAddress]? = nil, sending: [SendAddress]? = nil,
+        clock: Int64? = nil
     ) {
         self.version = version
         self.processId = processId
@@ -37,12 +40,13 @@ public struct DaemonInfo: Codable, Sendable, Equatable {
         self.names = names
         self.addresses = addresses
         self.listening = listening
+        self.sending = sending
         self.clock = clock
     }
 }
 
 /// Where a Listen is bound: `http://0.0.0.0:8080/hooks/`, say, for one on every network.
-public struct ListenAddress: Codable, Sendable, Equatable {
+public struct ListenAddress: Codable, Sendable, Equatable, Hashable {
     public var pipeline: String
     /// The Listen's key in its pipeline's graph.
     public var module: String
@@ -55,6 +59,34 @@ public struct ListenAddress: Codable, Sendable, Equatable {
         self.label = label
         self.address = address
     }
+}
+
+/// Where a Fetch or Send sends (Meep2 a5de139): its address as written, and the endpoint it reaches, keyed as a
+/// subscription's `destinations` are, so a declared flow can be matched with a Listen's address and with what's
+/// observed later.
+public struct SendAddress: Codable, Sendable, Equatable, Hashable {
+    public var pipeline: String
+    /// Its key in its pipeline's graph.
+    public var module: String
+    public var label: String
+    /// As written, constants worked out; an expression, quoted, when it's worked out for each message.
+    public var address: String
+    /// Whether the address is worked out for each message.
+    public var computed: Bool?
+    /// `host:port`, in lower case, with 80 or 443 for a web address that gives none. Nil when the host or port is
+    /// worked out for each message, so only what's observed can say where it goes.
+    public var endpoint: String?
+
+    public init(pipeline: String, module: String, label: String, address: String, computed: Bool? = nil, endpoint: String? = nil) {
+        self.pipeline = pipeline
+        self.module = module
+        self.label = label
+        self.address = address
+        self.computed = computed
+        self.endpoint = endpoint
+    }
+
+    public var isComputed: Bool { computed ?? false }
 }
 
 /// Where a pipeline is in its life.

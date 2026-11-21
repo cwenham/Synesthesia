@@ -42,11 +42,14 @@ public final class HostSession {
         public var encoding: SubscriptionEncoding = .cbor
         /// Whether to use a subscription when the daemon has them; false to follow it as step 1 did.
         public var subscribes = true
+        /// The least every pipeline's flows are followed with, whatever's shown; tests raise it.
+        public var leastFlowDetail: SubscriptionPlanner.FlowDetail = .none
 
         public init(
             statsEvery: Duration = .seconds(1), watchedStatsEvery: Duration = .milliseconds(200),
             listEvery: Duration = .seconds(2), retryAfter: Duration = .seconds(3), leastDetail: SubscriptionPlanner.Detail = .listed,
-            replanEvery: Duration = .milliseconds(300), rateScale: Double = 1, encoding: SubscriptionEncoding = .cbor, subscribes: Bool = true
+            replanEvery: Duration = .milliseconds(300), rateScale: Double = 1, encoding: SubscriptionEncoding = .cbor, subscribes: Bool = true,
+            leastFlowDetail: SubscriptionPlanner.FlowDetail = .none
         ) {
             self.statsEvery = statsEvery
             self.watchedStatsEvery = watchedStatsEvery
@@ -57,6 +60,7 @@ public final class HostSession {
             self.rateScale = rateScale
             self.encoding = encoding
             self.subscribes = subscribes
+            self.leastFlowDetail = leastFlowDetail
         }
     }
 
@@ -99,6 +103,7 @@ public final class HostSession {
                     host.identity = HostIdentity(id: id, names: info.names ?? [], addresses: info.addresses ?? [], version: info.version, pid: info.processId)
                 }
                 host.listens = info.listening ?? host.listens
+                host.sends = info.sending ?? host.sends
                 host.status = .connected
                 host.link = opened
                 if settings.subscribes, info.id != nil {
@@ -114,6 +119,7 @@ public final class HostSession {
             }
             stopFollowing()
             host.link = nil
+            for pipeline in host.pipelines { for module in pipeline.modules { module.placesFollowed = false } }
             await link?.close()
             try? await Task.sleep(for: settings.retryAfter)
         }
@@ -203,15 +209,23 @@ public final class HostSession {
     /// The plan for what's shown now, within the budget.
     private func makePlan() -> SubscriptionPlan {
         var details: [String: SubscriptionPlanner.Detail] = [:]
+        var flows: [String: SubscriptionPlanner.FlowDetail] = [:]
         var shapes: [String: SubscriptionPlanner.Shape] = [:]
+        var network: [String: Set<String>] = [:]
+        for listen in host.listens { network[listen.pipeline, default: []].insert(listen.module) }
+        for send in host.sends { network[send.pipeline, default: []].insert(send.module) }
         for pipeline in host.pipelines {
             let detail = max(pipeline.detail, settings.leastDetail)
-            guard detail > .listed else { continue }
-            details[pipeline.name] = detail
-            shapes[pipeline.name] = SubscriptionPlanner.Shape(modules: pipeline.modules.count, links: pipeline.links.count)
+            let flow = max(pipeline.flowDetail, settings.leastFlowDetail)
+            let counting = network[pipeline.name]?.count ?? 0
+            guard detail > .listed || flow > .none && counting > 0 else { continue }
+            if detail > .listed { details[pipeline.name] = detail }
+            if flow > .none { flows[pipeline.name] = flow }
+            shapes[pipeline.name] = SubscriptionPlanner.Shape(modules: pipeline.modules.count, links: pipeline.links.count, network: counting)
         }
-        let rates = planner.rates(for: details, shapes: shapes, others: max(0, host.pipelines.count - details.count))
+        let rates = planner.rates(for: details, flows: flows, shapes: shapes, others: max(0, host.pipelines.count - shapes.count))
         self.rates = rates
+        host.traffic.flows = flows.values.reduce(into: [:]) { $0[$1, default: 0] += 1 }
         host.traffic.slowdown = rates.slowdown
         host.traffic.estimate = rates.estimate
         var counted: [SubscriptionPlanner.Detail: Int] = [:]
@@ -226,7 +240,9 @@ public final class HostSession {
                 modules: entry.modules.map { ["*": duration($0)] } ?? [:],
                 links: entry.links.map { ["*": duration($0)] } ?? [:],
                 timing: entry.timing.map { ["*": duration($0)] } ?? [:],
-                bytes: entry.bytes.map { ["*": duration($0)] } ?? [:]
+                bytes: entry.bytes.map { ["*": duration($0)] } ?? [:],
+                arrivals: entry.places.map { ["*": duration($0)] } ?? [:],
+                destinations: entry.places.map { ["*": duration($0)] } ?? [:]
             )
         }
         return SubscriptionPlan(
@@ -268,6 +284,7 @@ public final class HostSession {
             }
             }
             if let listens = hostUpdate.listens { host.listens = listens }
+            if let sends = hostUpdate.sends { host.sends = sends }
         } else if let every = plan.host.map(seconds), let last = host.totals.lastRead, time - last > 1.5 * every, time - last < 6 * every {
             host.totals.read(at: time)
         }
@@ -324,6 +341,37 @@ public final class HostSession {
         for (key, histogram) in part?.timing ?? [:] {
             if let histogram { pipeline.module(key)?.apply(timing: histogram, scale: reading.scale) }
         }
+
+        // Where messages come from and go (Meep2 a5de139), read as module counts are.
+        for (name, value) in part?.clients ?? [:] {
+            if let value { pipeline.clients[name] = value } else { pipeline.clients.removeValue(forKey: name) }
+        }
+        for (endpoint, value) in part?.peers ?? [:] {
+            if let value { pipeline.peers[endpoint] = value } else { pipeline.peers.removeValue(forKey: endpoint) }
+        }
+        let folded = part?.folded ?? [:]
+        func applyPlaces(_ kind: PlaceKind, _ changed: [String: [String: [Int64?]?]?]?, every: Duration?, order: [String]) {
+            for (key, places) in changed ?? [:] {
+                guard let module = pipeline.module(key) ?? (places == nil ? nil : pipeline.addModule(key)) else { continue }
+                if let places {
+                    module.apply(places: places, kind: kind, order: order, folded: folded[key] ?? [], at: time)
+                } else {
+                    module.clearPlaces()
+                }
+            }
+            if every == nil {
+                for module in pipeline.modules where module.placeKind == kind { module.placesFollowed = false }
+            }
+            for module in pipeline.modules where module.placeKind == kind && changed?[module.key] == nil {
+                if let names = folded[module.key] {
+                    module.apply(places: nil, kind: kind, order: order, folded: names, at: time)
+                } else if module.placesRead != nil, late(module.placesRead, every) {
+                    module.apply(places: nil, kind: kind, order: order, folded: [], at: time)
+                }
+            }
+        }
+        applyPlaces(.arrivals, part?.arrivals, every: entry?.arrivals["*"], order: reading.order.arrivals ?? CountOrder.places)
+        applyPlaces(.destinations, part?.destinations, every: entry?.destinations["*"], order: reading.order.destinations ?? CountOrder.places)
     }
 
     private func seconds(_ duration: Duration) -> Double {

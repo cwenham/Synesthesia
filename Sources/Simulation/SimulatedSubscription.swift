@@ -9,6 +9,13 @@ struct SimulatedReading: Sendable {
         var links: [LinkDetail]
         /// Each module's time spent handling, in microseconds.
         var busy: [Int64]
+        /// Places folded into `*`, by module.
+        var folded: [String: Set<String>] = [:]
+
+        /// Each Listen's arrivals and each Fetch's and Send's destinations at `elapsed`, by module key and place.
+        func places(at elapsed: Double) -> [String: [String: [Int64]]] {
+            spec.places(at: elapsed, modules: modules, folded: folded)
+        }
     }
 
     var clock: Int64
@@ -16,7 +23,10 @@ struct SimulatedReading: Sendable {
     var pipelines: [String: Pipeline]
     var summaries: [PipelineSummary]
     var listening: [ListenAddress]
+    var sending: [SendAddress] = []
     var cores: Int
+    /// Places folded into `*`, by pipeline and module.
+    var folded: [String: [String: Set<String>]] = [:]
 }
 
 /// A subscription to a ``SimulatedHost``, sending as Meep2's does: `hello`, then updates on one grid of rates carrying
@@ -75,6 +85,7 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
         var hostTotals: [String: Int64] = [:]
         var states: [String: Int] = [:]
         var listens: [ListenAddress]?
+        var sends: [SendAddress]?
         var runtime: [String: JSONValue] = [:]
         var graphs: [String: Int] = [:]
         var totals: [String: [String: Int64]] = [:]
@@ -82,6 +93,24 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
         var links: [String: [String: [Int64]]] = [:]
         var bytes: [String: [String: [Int64]]] = [:]
         var timing: [String: [String: TimingHistogram]] = [:]
+        /// Each pipeline's places, by module key and place, and its clients' names and peers.
+        var places: [String: [String: [String: [Int64]]]] = [:]
+        var clients: [String: [String: String]] = [:]
+        var peers: [String: [String: String]] = [:]
+    }
+
+    /// Something sent on its own grid: the list, the host, the runtime, or one of a pipeline's parts.
+    private struct DueItem: Hashable {
+        var pipeline = ""
+        var kind: String
+        var module = ""
+
+        init(_ kind: String) { self.kind = kind }
+        init(_ pipeline: String, _ kind: String, _ module: String = "") {
+            self.pipeline = pipeline
+            self.kind = kind
+            self.module = module
+        }
     }
 
     private func run(_ host: SimulatedHost) async {
@@ -95,7 +124,7 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
             return
         }
         var last = Sent()
-        var due: [String: Double] = [:]
+        var due: [DueItem: Double] = [:]
         var seq = 0
         var lastSent = -Double.infinity
         var tokens = Double(plan.budget ?? 0)
@@ -110,7 +139,7 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
             if replanned { due = [:] }
             let now = reading.elapsed
             /// Whether `item` at `rate` is due now, moving it on to its next time on the grid if so.
-            func isDue(_ item: String, _ rate: Duration?) -> Bool {
+            func isDue(_ item: DueItem, _ rate: Duration?) -> Bool {
                 guard let rate else { return false }
                 let every = max(Double(rate.components.seconds) + Double(rate.components.attoseconds) / 1e18, 0.05)
                 if let next = due[item], now < next { return false }
@@ -119,7 +148,7 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
             }
 
             var update = SubscriptionUpdate(seq: seq + 1, clock: reading.clock, bytes: lock.withLock { sent })
-            if isDue("list", plan.list) {
+            if isDue(DueItem("list"), plan.list) {
                 var list: [String: PipelineSummary?] = [:]
                 for summary in reading.summaries where last.list[summary.name] != summary {
                     list[summary.name] = summary
@@ -131,7 +160,7 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
                 }
                 if !list.isEmpty { update.list = list }
             }
-            if isDue("host", plan.host) {
+            if isDue(DueItem("host"), plan.host) {
                 var hostUpdate = HostUpdate()
                 let totals = Self.totals(of: Array(reading.pipelines.values))
                 let changedTotals = totals.filter { last.hostTotals[$0.key] != $0.value }
@@ -146,9 +175,13 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
                     hostUpdate.listens = reading.listening
                     last.listens = reading.listening
                 }
+                if last.sends != reading.sending {
+                    hostUpdate.sends = reading.sending
+                    last.sends = reading.sending
+                }
                 if hostUpdate != HostUpdate() { update.host = hostUpdate }
             }
-            if isDue("runtime", plan.runtime) {
+            if isDue(DueItem("runtime"), plan.runtime) {
                 let runtime = Self.runtime(reading)
                 let changedRuntime = runtime.filter { last.runtime[$0.key] != $0.value }
                 if !changedRuntime.isEmpty { update.runtime = changedRuntime }
@@ -165,6 +198,9 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
                     last.links[name] = nil
                     last.bytes[name] = nil
                     last.timing[name] = nil
+                    last.places[name] = nil
+                    last.clients[name] = nil
+                    last.peers[name] = nil
                     continue
                 }
                 var part = PipelineUpdate()
@@ -173,7 +209,7 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
                     part.graph = GraphStamp(version: version, reason: last.graphs[name] == nil ? nil : "reload")
                     last.graphs[name] = version
                 }
-                if isDue("\(name)/totals", entry.totals) {
+                if isDue(DueItem(name, "totals"), entry.totals) {
                     let totals = Self.totals(of: [pipeline])
                     let before = last.totals[name] ?? [:]
                     let changedTotals = totals.filter { before[$0.key] != $0.value }
@@ -185,29 +221,85 @@ final class SimulatedSubscription: HostSubscription, @unchecked Sendable {
                 var bytes: [String: [Int64?]?] = [:]
                 var timing: [String: TimingHistogram?] = [:]
                 for (index, key) in keys.enumerated() {
-                    if isDue("\(name)/modules/\(key)", entry.modules[key] ?? entry.modules["*"]) {
+                    if isDue(DueItem(name, "modules", key), entry.modules[key] ?? entry.modules["*"]) {
                         let counts = pipeline.modules[index]
                         let array = [counts.received, counts.handled, counts.emitted, counts.passed, pipeline.busy[index], counts.queued,
                                      counts.dropped, counts.filtered, counts.failed, counts.restarts, counts.expired, counts.refused]
                         if let delta = Self.delta(array, from: last.modules[name]?[key]) { modules[key] = delta }
                         last.modules[name, default: [:]][key] = array
                     }
-                    if isDue("\(name)/bytes/\(key)", entry.bytes[key] ?? entry.bytes["*"]), let traffic = Self.traffic(pipeline, index) {
+                    if isDue(DueItem(name, "bytes", key), entry.bytes[key] ?? entry.bytes["*"]), let traffic = Self.traffic(pipeline, index) {
                         if let delta = Self.delta(traffic, from: last.bytes[name]?[key]) { bytes[key] = delta }
                         last.bytes[name, default: [:]][key] = traffic
                     }
-                    if isDue("\(name)/timing/\(key)", entry.timing[key] ?? entry.timing["*"]),
+                    if isDue(DueItem(name, "timing", key), entry.timing[key] ?? entry.timing["*"]),
                        let histogram = Self.histogram(pipeline, index), last.timing[name]?[key] != histogram {
                         timing[key] = histogram
                         last.timing[name, default: [:]][key] = histogram
                     }
                 }
                 var links: [String: [Int64?]?] = [:]
-                for link in pipeline.links where isDue("\(name)/links/\(link.key)", entry.links[link.key] ?? entry.links["*"]) {
+                for link in pipeline.links where isDue(DueItem(name, "links", link.key), entry.links[link.key] ?? entry.links["*"]) {
                     let array = [link.carried, link.errors]
                     if let delta = Self.delta(array, from: last.links[name]?[link.key]) { links[link.key] = delta }
                     last.links[name, default: [:]][link.key] = array
                 }
+                // Arrivals for Listens and destinations for Fetches and Sends, each place's counts as they changed; a
+                // place gone was folded, and is named so.
+                var arrivals: [String: [String: [Int64?]?]?] = [:]
+                var destinations: [String: [String: [Int64?]?]?] = [:]
+                var folded: [String: [String]] = [:]
+                var askedForArrivals = false
+                var askedForDestinations = false
+                var places: [String: [String: [Int64]]]?
+                for (index, key) in keys.enumerated() {
+                    let verb = pipeline.spec.modules[index].verb
+                    let isListen = verb == "Listen"
+                    guard isListen || verb == "Fetch" || verb == "Send" else { continue }
+                    let rate = isListen ? (entry.arrivals[key] ?? entry.arrivals["*"]) : (entry.destinations[key] ?? entry.destinations["*"])
+                    if rate != nil {
+                        if isListen { askedForArrivals = true } else { askedForDestinations = true }
+                    }
+                    guard isDue(DueItem(name, "places", key), rate) else {
+                        if rate == nil { last.places[name]?[key] = nil }
+                        continue
+                    }
+                    if places == nil { places = pipeline.places(at: reading.elapsed) }
+                    let current = places?[key] ?? [:]
+                    let before = last.places[name]?[key] ?? [:]
+                    var changed: [String: [Int64?]?] = [:]
+                    for (place, values) in current {
+                        if let delta = Self.delta(values, from: before[place]) { changed[place] = delta }
+                    }
+                    let gone = before.keys.filter { current[$0] == nil }.sorted()
+                    for place in gone { changed[place] = .some(nil) }
+                    if !gone.isEmpty { folded[key] = gone }
+                    if !changed.isEmpty {
+                        if isListen { arrivals[key] = changed } else { destinations[key] = changed }
+                    }
+                    last.places[name, default: [:]][key] = current
+                }
+                if !arrivals.isEmpty { part.arrivals = arrivals }
+                if !destinations.isEmpty { part.destinations = destinations }
+                if !folded.isEmpty { part.folded = folded }
+                if askedForArrivals, last.clients[name] == nil || !arrivals.isEmpty {
+                    let names = pipeline.spec.clientNames
+                    let before = last.clients[name] ?? [:]
+                    var clients: [String: String?] = [:]
+                    for (address, client) in names where before[address] != client { clients[address] = client }
+                    if !clients.isEmpty { part.clients = clients }
+                    last.clients[name] = names
+                }
+                if askedForDestinations, last.peers[name] == nil || !destinations.isEmpty {
+                    let current = pipeline.spec.peers
+                    let before = last.peers[name] ?? [:]
+                    var peers: [String: String?] = [:]
+                    for (endpoint, peer) in current where before[endpoint] != peer { peers[endpoint] = peer }
+                    for endpoint in before.keys where current[endpoint] == nil { peers[endpoint] = .some(nil) }
+                    if !peers.isEmpty { part.peers = peers }
+                    last.peers[name] = current
+                }
+
                 if !modules.isEmpty { part.modules = modules }
                 if !links.isEmpty { part.links = links }
                 if !bytes.isEmpty { part.bytes = bytes }

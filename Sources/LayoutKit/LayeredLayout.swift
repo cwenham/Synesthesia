@@ -530,7 +530,12 @@ private struct Work {
             )
             columnOf[vertex.id] = vertex.column
         }
-        let bounds = frames.values.reduce(CGRect.null) { $0.union($1) }
+        // From exact least and greatest edges: unions chained in the dictionary's order round differently each time.
+        let bounds = frames.isEmpty ? CGRect.null : CGRect(
+            x: frames.values.map(\.minX).min()!, y: frames.values.map(\.minY).min()!,
+            width: frames.values.map(\.maxX).max()! - frames.values.map(\.minX).min()!,
+            height: frames.values.map(\.maxY).max()! - frames.values.map(\.minY).min()!
+        )
         let shift = CGPoint(x: -bounds.minX, y: -bounds.minY)
         for (id, frame) in frames { frames[id] = frame.offsetBy(dx: shift.x, dy: shift.y) }
         var bends: [String: [CGPoint]] = [:]

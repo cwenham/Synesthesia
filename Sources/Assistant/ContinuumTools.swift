@@ -106,12 +106,15 @@ public enum ContinuumTools {
     static func listContinuum(_ viewer: Viewer) -> Tool {
         Tool(
             name: "list_continuum", title: "List the Continuum",
-            description: "Lists the hosts Synesthesia follows, whether each can be reached and how (this Mac's daemon, SSH, simulated), each host's ID, roll-up (messages a second in, processor cores busy and spare, clock offset) and connection (bytes a second against its budget), and their pipelines with their state, rates and cores. Also says what's selected in the app and the canvas's zoom level (mesh, host or pipeline).",
+            description: "Lists the hosts Synesthesia follows, whether each can be reached and how (this Mac's daemon, SSH, simulated), each host's ID, roll-up (messages a second in, processor cores busy and spare, clock offset) and connection (bytes a second against its budget), and their pipelines with their state, rates and cores. Also lists the flows between pipelines (a Fetch or Send reaching a Listen, on one host or across hosts: declared from addresses, observed from messages that crossed, with rates) and the boundary: endpoints outside Meep that Listens hear from and Fetches and Sends reach, grouped by domain, with rates in and out, failures and rejections. Says what's selected in the app and the canvas's zoom level (boundary, mesh, host or pipeline).",
             inputSchema: ["type": "object", "properties": [:]]
         ) { _ in
-            .json([
+            let map = viewer.continuum.flowMap()
+            return .json([
                 "selected": viewer.selection.map { .string($0.description) } ?? .null,
                 "zoomLevel": viewer.canvas.map { .string($0.level.rawValue) } ?? .null,
+                "flows": .array(map.flows.map(describe)),
+                "boundary": .array(map.boundary.map(describe)),
                 "hosts": .array(viewer.continuum.hosts.map { host in
                     var entry: [String: JSONValue] = [
                         "address": .string(host.address.description), "title": .string(host.title),
@@ -165,13 +168,14 @@ public enum ContinuumTools {
     static func describePipeline(_ viewer: Viewer) -> Tool {
         Tool(
             name: "describe_pipeline", title: "Describe a pipeline",
-            description: "A pipeline's modules (verb, role, parameters, where each is written) and links, with every count that isn't zero and current rates per second. Rates are smoothed over about two seconds; use watch_counts to measure over a period.",
+            description: "A pipeline's modules (verb, role, parameters, where each is written) and links, with every count that isn't zero and current rates per second. For Listens, Fetches and Sends, where messages come from and go: each place (a client's address and name, another Meep's origin, or host:port, with whether it's Meep) with its rates, failures and rejections; and the pipeline's flows to and from other pipelines and its boundary. Rates are smoothed over about two seconds; use watch_counts to measure over a period.",
             inputSchema: ["type": "object", "properties": ["address": addressSchema], "required": ["address"]]
         ) { arguments in
             let (host, pipeline, _) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
             let current = host.isReachable && pipeline!.state.isLive
-            if current { await freshen(pipeline!) }
-            return .json(describe(pipeline!, host: host, current: current))
+            if current { await freshen(pipeline!, on: host) }
+            let names = Dictionary(viewer.continuum.hosts.compactMap { host in host.identity.map { ($0.id, host.name) } }, uniquingKeysWith: { first, _ in first })
+            return .json(describe(pipeline!, host: host, current: current, flows: viewer.continuum.flowMap(), hostNames: names))
         }
     }
 
@@ -391,14 +395,27 @@ public enum ContinuumTools {
     static func show(_ viewer: Viewer) -> Tool {
         Tool(
             name: "show", title: "Show something in the app",
-            description: "Points the app at an address so the person can see what you mean: the canvas zooms to it and it's selected in the sidebar. A host is shown with its pipelines as districts; a pipeline whole, with its tiles; a module close up, selected. meep:// alone, with no host, shows the whole mesh of hosts.",
+            description: "Points the app at an address so the person can see what you mean: the canvas zooms to it and it's selected in the sidebar. A host is shown with its pipelines as districts; a pipeline whole, with its tiles; a module close up, selected. meep:// alone, with no host, shows the whole mesh of hosts; boundary draws back to the edge of the Continuum, with every host a node and the endpoints outside Meep round them.",
             inputSchema: ["type": "object", "properties": ["address": addressSchema], "required": ["address"]],
             readOnly: false
         ) { arguments in
             if let text = arguments["address"]?.string?.trimmingCharacters(in: .whitespaces), ["meep://", "meep:///", "mesh"].contains(text) {
                 viewer.reveal()
                 viewer.select(nil)
+                // With nothing selected already, selecting nothing changes nothing: the canvas is told itself, as from
+                // the boundary.
+                viewer.canvas?.show(nil)
                 return .json(["shown": "the whole mesh"])
+            }
+            if let text = arguments["address"]?.string?.trimmingCharacters(in: .whitespaces).lowercased(), ["boundary", "meep://boundary"].contains(text),
+               viewer.continuum.host("boundary") == nil {
+                viewer.reveal()
+                viewer.select(nil)
+                // Once the selection has moved the view to the mesh, draw back to the boundary.
+                try await Task.sleep(for: .milliseconds(50))
+                viewer.canvas?.showBoundary()
+                let count = viewer.continuum.flowMap().boundary.count
+                return .json(["shown": "the boundary", "endpoints": .number(count)])
             }
             let (host, pipeline, module) = try resolve(arguments["address"], in: viewer, needsPipeline: false)
             viewer.reveal()
@@ -596,7 +613,7 @@ public enum ContinuumTools {
 
     // MARK: Descriptions
 
-    static func describe(_ pipeline: MeepPipeline, host: MeepHost, current: Bool) -> JSONValue {
+    static func describe(_ pipeline: MeepPipeline, host: MeepHost, current: Bool, flows map: FlowMap? = nil, hostNames: [String: String] = [:]) -> JSONValue {
         var result: [String: JSONValue] = [
             "address": .string(pipeline.address.description), "host": .string(host.title),
             "state": .string(pipeline.state.rawValue), "file": .string(pipeline.path),
@@ -633,6 +650,25 @@ public enum ContinuumTools {
             if let traffic = module.traffic, !traffic.isEmpty {
                 entry["bytes"] = ["received": .number(traffic["received"]), "sent": .number(traffic["sent"])]
             }
+            if let kind = module.placeKind, !module.places.isEmpty {
+                entry[kind == .arrivals ? "arrivals" : "destinations"] = .array(module.places.sorted { $0.key < $1.key }.map { place, counts in
+                    var item: [String: JSONValue] = ["place": .string(place)]
+                    if let name = pipeline.clients[place] { item["name"] = .string(name) }
+                    if let peer = pipeline.peers[place] { item["meepHost"] = .string(hostNames[peer] ?? peer) }
+                    if let origin = MeepOrigin(place) { item["fromMeep"] = .string(hostNames[origin.daemon] ?? "another Meep (\(origin.daemon))") }
+                    item["received"] = .number(counts["received"])
+                    item["sent"] = .number(counts["sent"])
+                    if counts["failed"] > 0 { item["failed"] = .number(counts["failed"]) }
+                    if counts["rejected"] > 0 { item["rejected"] = .number(counts["rejected"]) }
+                    if current {
+                        item["perSecond"] = [
+                            "received": .rounded(counts.rate("received")), "sent": .rounded(counts.rate("sent")),
+                            "failed": .rounded(counts.rate("failed")), "rejected": .rounded(counts.rate("rejected")),
+                        ]
+                    }
+                    return .object(item)
+                })
+            }
             if current {
                 let rates = CountKind.allCases.compactMap { kind -> (String, JSONValue)? in
                     let rate = module.rates[kind]
@@ -642,6 +678,19 @@ public enum ContinuumTools {
             }
             return .object(entry)
         })
+        if let map {
+            let flows = map.flows(touching: pipeline.address)
+            if !flows.isEmpty { result["flows"] = .array(flows.map(describe)) }
+            let boundary = map.boundaryLinks(touching: pipeline.address)
+            if !boundary.isEmpty {
+                result["boundary"] = .array(boundary.map { endpoint, link in
+                    var entry = linkEntry(link)
+                    entry["endpoint"] = .string(endpoint.name)
+                    entry["endpointKind"] = .string(endpoint.kind.rawValue)
+                    return .object(entry)
+                })
+            }
+        }
         result["links"] = .array(pipeline.links.map { link in
             var entry: [String: JSONValue] = [
                 "key": .string(link.key), "from": .string(link.from), "to": .string(link.to), "port": .string(link.port.rawValue),
@@ -661,13 +710,93 @@ public enum ContinuumTools {
         return .object(result)
     }
 
+    /// A flow between pipelines, as Claude reads it.
+    static func describe(_ flow: MeshFlow) -> JSONValue {
+        var entry: [String: JSONValue] = [
+            "from": .string(flow.from.description), "to": .string(flow.to.description), "fromLabel": .string(flow.fromLabel),
+            "toLabel": .string(flow.toLabel), "declared": .bool(flow.declared), "observed": .bool(flow.observed), "known": .string(flow.evidence),
+        ]
+        if flow.byAddress { entry["seenByAddressOnly"] = true }
+        if flow.observed {
+            entry["messagesPerSecond"] = .rounded(flow.rate)
+            entry["repliesPerSecond"] = .rounded(flow.replies)
+            if flow.failed >= 0.005 { entry["failingPerSecond"] = .rounded(flow.failed) }
+            if flow.rejected >= 0.005 { entry["rejectedPerSecond"] = .rounded(flow.rejected) }
+            entry["bytesPerSecond"] = ["there": .rounded(flow.bytesOut, places: 0), "back": .rounded(flow.bytesBack, places: 0)]
+            entry["messagesSoFar"] = .number(flow.count)
+        }
+        return .object(entry)
+    }
+
+    /// An endpoint on the boundary, with each module that talks to it.
+    static func describe(_ endpoint: BoundaryEndpoint) -> JSONValue {
+        var entry: [String: JSONValue] = [
+            "id": .string(endpoint.id), "name": .string(endpoint.name), "kind": .string(endpoint.kind.rawValue),
+            "knownAs": .array(endpoint.places.map { .string($0) }),
+        ]
+        if !endpoint.domain.isEmpty { entry["group"] = .string(endpoint.domain) }
+        if endpoint.isDeclaredOnly {
+            entry["declaredOnly"] = true
+        } else {
+            entry["inPerSecond"] = .rounded(endpoint.rateIn)
+            entry["outPerSecond"] = .rounded(endpoint.rateOut)
+            if endpoint.failed >= 0.005 { entry["failingPerSecond"] = .rounded(endpoint.failed) }
+            if endpoint.rejected >= 0.005 { entry["rejectedPerSecond"] = .rounded(endpoint.rejected) }
+            entry["bytesPerSecond"] = ["in": .rounded(endpoint.bytesIn, places: 0), "out": .rounded(endpoint.bytesOut, places: 0)]
+        }
+        entry["links"] = .array(endpoint.links.map(describe))
+        return .object(entry)
+    }
+
+    /// One module's traffic with the boundary.
+    static func describe(_ link: BoundaryLink) -> JSONValue {
+        .object(linkEntry(link))
+    }
+
+    static func linkEntry(_ link: BoundaryLink) -> [String: JSONValue] {
+        var entry: [String: JSONValue] = [
+            "module": .string(link.module.description), "label": .string(link.moduleLabel), "place": .string(link.place),
+            "direction": .string(link.direction == .inbound ? "in, to a Listen" : "out, from a Fetch or Send"), "observed": .bool(link.observed),
+        ]
+        if link.observed {
+            entry["inPerSecond"] = .rounded(link.rateIn)
+            entry["outPerSecond"] = .rounded(link.rateOut)
+            if link.failed >= 0.005 { entry["failingPerSecond"] = .rounded(link.failed) }
+            if link.rejected >= 0.005 { entry["rejectedPerSecond"] = .rounded(link.rejected) }
+        }
+        return entry
+    }
+
     /// A pipeline the canvas shows only as a plate, or not at all, has only its totals followed (design, section 4):
     /// asks for its modules' counts for a moment, and waits for them, so what's described is current.
-    static func freshen(_ pipeline: MeepPipeline) async {
-        guard pipeline.detail < .modules else { return }
+    static func freshen(_ pipeline: MeepPipeline, on host: MeepHost? = nil) async {
+        // Its Listens, Fetches and Sends, whose places come only while their flows are shown or it's watched.
+        var network: Set<String> = []
+        for listen in host?.listens ?? [] where listen.pipeline == pipeline.name { network.insert(listen.module) }
+        for send in host?.sends ?? [] where send.pipeline == pipeline.name { network.insert(send.module) }
+        guard pipeline.detail < .modules || !network.isEmpty && pipeline.flowDetail < .close else { return }
         pipeline.watchers += 1
         defer { pipeline.watchers -= 1 }
+        let placesBefore = Dictionary(uniqueKeysWithValues: network.map { ($0, pipeline.module($0)?.placesRead) })
         await waitForModuleCounts(pipeline)
+        guard !network.isEmpty else { return }
+        // Wait until each has been read twice since it was watched, for rates, or a few seconds at most: one with
+        // nothing counted yet has no places to read.
+        var readings: [String: Int] = [:]
+        var last = placesBefore
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            for key in network {
+                let read = pipeline.module(key)?.placesRead
+                if read != nil, read != last[key] ?? nil {
+                    readings[key, default: 0] += 1
+                    last[key] = read
+                }
+            }
+            let counted = network.filter { pipeline.module($0)?.places.isEmpty == false }
+            if !counted.isEmpty, counted.allSatisfy({ readings[$0, default: 0] >= 2 }), readings.count >= counted.count { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     /// Waits a moment for every module's counts to come again, and once more, for rates.
@@ -830,7 +959,36 @@ public enum ContinuumTools {
             "viewSize": [.rounded(size.width, places: 0), .rounded(size.height, places: 0)], "hostsOnScreen": .array(hosts),
         ]
         result["focus"] = canvas.focus.map { .string($0.description) } ?? .null
-        if let hovered = canvas.hovered { result["hovered"] = .string(hovered.address.description) }
+        if let hovered = canvas.hovered { result["hovered"] = .string(hovered.description) }
+        // Flows drawn now: between pipelines, or added up between hosts drawn as nodes.
+        var flows: [JSONValue] = []
+        var seen: Set<String> = []
+        for id in canvas.flowsOnScreen where !seen.contains(id) {
+            seen.insert(id)
+            if let pair = canvas.hostFlow(id) {
+                flows.append([
+                    "betweenHosts": .array([.string(pair.from), .string(pair.to)]), "flows": .number(pair.flows.count),
+                    "messagesPerSecond": .rounded(pair.flows.reduce(0) { $0 + $1.rate }),
+                    "observed": .bool(pair.flows.contains(where: \.observed)),
+                ])
+            } else if let flow = canvas.flowMap.flows.first(where: { $0.id == id }), case .object(var entry) = describe(flow) {
+                entry["drawn"] = .string(flow.observed ? "solid, with particles" : "dashed")
+                flows.append(.object(entry))
+            }
+        }
+        if !flows.isEmpty { result["flowsOnScreen"] = .array(flows) }
+        let endpoints = canvas.endpointsOnScreen.filter { $0.frame.intersects(screen) }
+        if !endpoints.isEmpty {
+            result["boundaryOnScreen"] = .array(endpoints.compactMap { id, frame in
+                guard let endpoint = canvas.flowMap.boundary.first(where: { $0.id == id }) else { return nil }
+                var entry: [String: JSONValue] = [
+                    "name": .string(endpoint.name), "kind": .string(endpoint.kind.rawValue), "frame": rect(frame),
+                    "line": .string(ContinuumStage.ratesLine(endpoint)), "modules": .number(Set(endpoint.links.map(\.module)).count),
+                ]
+                if !endpoint.domain.isEmpty { entry["group"] = .string(endpoint.domain) }
+                return .object(entry)
+            })
+        }
         return .object(result)
     }
 

@@ -43,7 +43,7 @@ public actor SimulatedHost: HostLink {
     }
 
     /// A UUID made from a name, so a simulated host keeps its ID from one run to the next.
-    static func id(for name: String) -> String {
+    public static func id(for name: String) -> String {
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in name.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
         let low = hash &* 0x9E3779B97F4A7C15
@@ -77,17 +77,41 @@ public actor SimulatedHost: HostLink {
         let identity = identity
         return DaemonInfo(
             version: "simulated", processId: 0, socket: "simulated://\(name)", capabilities: capabilities, pipelines: pipelineSpecs.map(\.name),
-            id: id, names: identity.names, addresses: identity.addresses, listening: listening, clock: clockNow
+            id: id, names: identity.names, addresses: identity.addresses, listening: listening, sending: sending, clock: clockNow
         )
     }
 
-    /// Where its Listens are bound: one made-up address each.
+    /// Where its Listens are bound: as each says, or a made-up address.
     var listening: [ListenAddress] {
         pipelineSpecs.flatMap { spec in
             spec.modules.indices.filter { spec.modules[$0].verb == "Listen" }.map { index in
-                ListenAddress(pipeline: spec.name, module: "m\(index + 1)", label: spec.label(index), address: "http://0.0.0.0:\(8000 + index)/\(spec.name)/")
+                ListenAddress(pipeline: spec.name, module: "m\(index + 1)", label: spec.label(index), address: spec.listenAddress(index))
             }
         }
+    }
+
+    /// Where its Fetches and Sends with addresses send, as Meep2 declares them.
+    var sending: [SendAddress] {
+        pipelineSpecs.flatMap { spec in
+            spec.modules.indices.compactMap { index -> SendAddress? in
+                let module = spec.modules[index]
+                guard module.verb == "Fetch" || module.verb == "Send", let address = module.address else { return nil }
+                let computed = address.contains("{")
+                return SendAddress(
+                    pipeline: spec.name, module: "m\(index + 1)", label: spec.label(index), address: computed ? "\"\(address)\"" : address,
+                    computed: computed, endpoint: PipelineSpec.endpoint(of: address)
+                )
+            }
+        }
+    }
+
+    /// Places folded into `*`, by pipeline and module key, as a Listen or Fetch makes room for a new one.
+    private(set) var folded: [String: [String: Set<String>]] = [:]
+
+    /// Folds a module's place into `*` (or `meep://*`), as Meep2 does when a new place needs its room: from now on its
+    /// counts are `*`'s, and the next update names it in `folded`.
+    public func fold(_ place: String, of module: String, in pipeline: String) {
+        folded[pipeline, default: [:]][module, default: []].insert(place)
     }
 
     var summaries: [PipelineSummary] {
@@ -286,13 +310,18 @@ public actor SimulatedHost: HostLink {
         let now = elapsed
         var pipelines: [String: SimulatedReading.Pipeline] = [:]
         for spec in pipelineSpecs {
-            let modules = spec.counts(at: now)
+            // One pass works out every module's and link's counts; places are worked out only when they're asked for.
+            let (counts, links) = spec.flow(at: now)
             pipelines[spec.name] = SimulatedReading.Pipeline(
-                spec: spec, modules: modules.map(\.counts), links: spec.linkCounts(at: now),
-                busy: modules.indices.map { Int64((Double(modules[$0].counts.handled) * spec.modules[$0].handlingTime * 1_000_000).rounded()) }
+                spec: spec, modules: counts, links: links,
+                busy: counts.indices.map { Int64((Double(counts[$0].handled) * spec.modules[$0].handlingTime * 1_000_000).rounded()) },
+                folded: folded[spec.name] ?? [:]
             )
         }
-        return SimulatedReading(clock: clockNow, elapsed: now, pipelines: pipelines, summaries: summaries, listening: listening, cores: cores)
+        return SimulatedReading(
+            clock: clockNow, elapsed: now, pipelines: pipelines, summaries: summaries, listening: listening, sending: sending, cores: cores,
+            folded: folded
+        )
     }
 
     private func spec(_ name: String) throws -> PipelineSpec {
@@ -308,6 +337,32 @@ public actor SimulatedHost: HostLink {
             modules: spec.counts(at: elapsed), graphVersion: spec.graph.version, links: spec.linkCounts(at: elapsed),
             watching: spec.watching
         )
+    }
+}
+
+/// Where some of what a simulated Listen receives comes from.
+public struct SimulatedClient: Sendable {
+    /// As Meep2 keys it: a client's address, `meep://<daemon ID>/<pipeline>/<key>` from another Meep host, or `*`.
+    public var place: String
+    /// Its reverse-DNS name, for a client's address.
+    public var name: String?
+    /// The share of the Listen's messages that come from it.
+    public var share: Double
+    /// The shares of its requests answered with 5xx, and turned away with 4xx.
+    public var fails: Double
+    public var rejects: Double
+
+    public init(_ place: String, name: String? = nil, share: Double, fails: Double = 0, rejects: Double = 0) {
+        self.place = place
+        self.name = name
+        self.share = share
+        self.fails = fails
+        self.rejects = rejects
+    }
+
+    /// From a module on another Meep host.
+    public static func meep(_ daemon: String, _ pipeline: String, _ module: String, share: Double) -> SimulatedClient {
+        SimulatedClient("meep://\(daemon)/\(pipeline)/\(module)", share: share)
     }
 }
 
@@ -345,11 +400,25 @@ public struct PipelineSpec: Sendable {
         public var errorsOnly: Bool
         /// How long it takes to handle a message, on average, in seconds.
         public var handlingTime: Double
+        /// For a Listen, where it's bound; for a Fetch or Send, where it sends, with `{…}` for what's worked out for
+        /// each message.
+        public var address: String?
+        /// For a Listen, where what it receives comes from, each with its share.
+        public var clients: [SimulatedClient]
+        /// For a Fetch or Send whose far end is a Meep host, that daemon's ID.
+        public var peer: String?
+        /// For a Fetch or Send, the share of what it sends that's turned away (4xx).
+        public var rejects: Double
 
         public init(
             _ verb: String, _ role: VerbRole, name: String? = nil, from: [Int] = [], rate: Double = 0, passes: Double = 1,
-            fails: Double = 0, drops: Double = 0, queue: Double = 0, errorsOnly: Bool = false, handlingTime: Double? = nil
+            fails: Double = 0, drops: Double = 0, queue: Double = 0, errorsOnly: Bool = false, handlingTime: Double? = nil,
+            address: String? = nil, clients: [SimulatedClient] = [], peer: String? = nil, rejects: Double = 0
         ) {
+            self.address = address
+            self.clients = clients
+            self.peer = peer
+            self.rejects = rejects
             self.handlingTime = from.isEmpty ? 0 : handlingTime ?? (verb == "Fetch" ? 0.004 : verb == "Send" || verb == "Save" ? 0.0012
                 : role == .filter ? 0.00003 : role == .outlet ? 0.0002 : 0.0005)
             self.verb = verb
@@ -397,6 +466,78 @@ public struct PipelineSpec: Sendable {
         modules[index].name ?? "\(modules[index].verb) #\(index + 1)"
     }
 
+    /// Where a Listen is bound: as its spec says, or a made-up address.
+    func listenAddress(_ index: Int) -> String {
+        modules[index].address ?? "http://0.0.0.0:\(8000 + index)/\(name)/"
+    }
+
+    /// An address's endpoint, as Meep2 keys destinations: `host:port`, in lower case, with 80 or 443 for a web address
+    /// that gives none; nil when the host or port is worked out for each message.
+    static func endpoint(of address: String) -> String? {
+        let literal = address.split(separator: "{", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? address
+        guard let schemeEnd = literal.range(of: "://") else { return nil }
+        let scheme = literal[..<schemeEnd.lowerBound].lowercased()
+        let rest = literal[schemeEnd.upperBound...]
+        guard let end = rest.firstIndex(where: { $0 == "/" || $0 == "?" }) ?? (address.contains("{") ? nil : rest.endIndex) else { return nil }
+        let authority = rest[..<end].lowercased()
+        if authority.contains(":") { return authority }
+        let port = scheme == "https" || scheme == "wss" ? 443 : scheme == "tcp" ? nil : 80
+        return port.map { "\(authority):\($0)" }
+    }
+
+    /// Each Listen's counts by where they came from, and each Fetch's and Send's by where it connected, `seconds`
+    /// after it started, as Meep2 counts them: `[received, sent, bytesReceived, bytesSent, failed, rejected]`. Places
+    /// in `folded` count under `*` (or `meep://*`).
+    func places(at seconds: Double, modules counts: [ModuleStats], folded: [String: Set<String>] = [:]) -> [String: [String: [Int64]]] {
+        var result: [String: [String: [Int64]]] = [:]
+        for (index, module) in modules.enumerated() {
+            let key = "m\(index + 1)"
+            var places: [String: [Int64]] = [:]
+            func add(_ place: String, _ values: [Int64]) {
+                let folds = folded[key]?.contains(place) == true
+                let into = folds ? (place.hasPrefix("meep://") ? "meep://*" : "*") : place
+                places[into] = zip(places[into] ?? [0, 0, 0, 0, 0, 0], values).map { $0 + $1 }
+            }
+            if module.verb == "Listen" {
+                let total = Double(counts[index].emitted)
+                for client in module.clients {
+                    let received = total * client.share
+                    let rejected = received * client.rejects
+                    let failed = received * client.fails
+                    let values = [Int64(received), Int64(received), Int64(received * 220), Int64(received * 40), Int64(failed), Int64(rejected)]
+                    guard values[0] > 0 else { continue }
+                    add(client.place, values)
+                }
+            } else if module.verb == "Fetch" || module.verb == "Send", let address = module.address, let endpoint = Self.endpoint(of: address) {
+                let sent = Double(counts[index].handled)
+                guard sent > 0 else { continue }
+                let failed = Double(counts[index].failed)
+                let rejected = sent * module.rejects
+                let answered = max(0, sent - failed)
+                let fetches = module.verb == "Fetch"
+                add(endpoint, [Int64(answered), Int64(sent), Int64(sent * (fetches ? 820 : 24)), Int64(sent * (fetches ? 0 : 310)), Int64(failed), Int64(rejected)])
+            }
+            if !places.isEmpty { result[key] = places }
+        }
+        return result
+    }
+
+    /// Names for the clients' addresses its Listens hear from, as reverse DNS gives them.
+    var clientNames: [String: String] {
+        var names: [String: String] = [:]
+        for module in modules { for client in module.clients { if let name = client.name { names[client.place] = name } } }
+        return names
+    }
+
+    /// Which endpoints its Fetches and Sends reach are Meep hosts.
+    var peers: [String: String] {
+        var peers: [String: String] = [:]
+        for module in modules {
+            if let peer = module.peer, let address = module.address, let endpoint = Self.endpoint(of: address) { peers[endpoint] = peer }
+        }
+        return peers
+    }
+
     /// Each module's counts `seconds` after the pipeline started.
     public func counts(at seconds: Double) -> [ModuleDetail] {
         flow(at: seconds).modules.enumerated().map { index, stats in
@@ -411,7 +552,7 @@ public struct PipelineSpec: Sendable {
 
     /// Works out every module's and link's counts as Meep2 keeps them: what a module passes on or emits goes along
     /// each of its links, and so do its errors and those passing by it, but a module with `@errors` takes only errors.
-    private func flow(at seconds: Double) -> (modules: [ModuleStats], links: [LinkDetail]) {
+    func flow(at seconds: Double) -> (modules: [ModuleStats], links: [LinkDetail]) {
         var messagesOut = [Double](repeating: 0, count: modules.count)
         var errorsOut = [Double](repeating: 0, count: modules.count)
         var stats: [ModuleStats] = []
@@ -462,40 +603,60 @@ public struct PipelineSpec: Sendable {
         return (stats, links)
     }
 
-    /// Four pipelines of different shapes and speeds.
-    public static let demo: [PipelineSpec] = [
-        PipelineSpec(name: "orders", modules: [
-            ModuleSpec("Listen", .inlet, name: "Orders", rate: 140),
-            ModuleSpec("Where", .filter, name: "Valid", from: [0], passes: 0.92, fails: 0.002, queue: 1),
-            ModuleSpec("Fetch", .step, name: "Prices", from: [1], fails: 0.01, queue: 6),
-            ModuleSpec("Save", .outlet, from: [2], queue: 2),
-            ModuleSpec("Send", .outlet, name: "Reply", from: [2]),
-            ModuleSpec("WriteLine", .outlet, name: "Problems", from: [2], errorsOnly: true),
-        ]),
-        PipelineSpec(name: "ticker", modules: [
-            ModuleSpec("Interval", .source, name: "Ticks", rate: 2),
-            ModuleSpec("WriteLine", .outlet, from: [0]),
-        ]),
-        PipelineSpec(name: "sensors", modules: [
-            ModuleSpec("Listen", .inlet, name: "Readings", rate: 2400),
-            ModuleSpec("Listen", .inlet, name: "Backfill", rate: 300),
-            ModuleSpec("Batch", .step, from: [0, 1], passes: 0.01, queue: 40, handlingTime: 0.00025),
-            ModuleSpec("Classify", .step, from: [2], fails: 0.03, queue: 3),
-            ModuleSpec("Send", .outlet, name: "Alerts", from: [3], drops: 0.05),
-            ModuleSpec("Save", .outlet, name: "Rejects", from: [3], errorsOnly: true),
-        ]),
-        PipelineSpec(name: "warehouse", modules: [
-            ModuleSpec("Read", .source, name: "Files", rate: 50),
-            ModuleSpec("Listen", .inlet, name: "Uploads", rate: 30),
-            ModuleSpec("Parse", .step, from: [0, 1], fails: 0.02, queue: 2),
-            ModuleSpec("Where", .filter, name: "Fresh", from: [2], passes: 0.7),
-            ModuleSpec("Fetch", .step, name: "Enrich", from: [3], fails: 0.01, queue: 12),
-            ModuleSpec("Where", .filter, name: "Large", from: [4], passes: 0.1),
-            ModuleSpec("Send", .outlet, name: "Archive", from: [4]),
-            ModuleSpec("Save", .outlet, name: "Warehouse", from: [4], queue: 4),
-            ModuleSpec("Send", .outlet, name: "Alerts", from: [5]),
-            ModuleSpec("WriteLine", .outlet, name: "Rejects", from: [2], errorsOnly: true),
-            ModuleSpec("WriteLine", .outlet, name: "Problems", from: [4], errorsOnly: true),
-        ]),
-    ]
+    /// Four pipelines of different shapes and speeds, for a host called `simulated`, with flows between them and
+    /// endpoints outside Meep: clients of its Listens, APIs its Fetches and Sends reach, another Meep it doesn't know,
+    /// and clients past a Listen's limit.
+    public static let demo: [PipelineSpec] = {
+        let me = SimulatedHost.id(for: "simulated")
+        let stranger = "7c3e9a1b-5d2f-4e8a-9b6c-0d1e2f3a4b5c"
+        return [
+            PipelineSpec(name: "orders", modules: [
+                ModuleSpec("Listen", .inlet, name: "Orders", rate: 140, address: "http://0.0.0.0:8443/orders/", clients: [
+                    SimulatedClient("203.0.113.7", name: "shop-web-1.example.com", share: 0.45),
+                    SimulatedClient("203.0.113.8", name: "shop-web-2.example.com", share: 0.4, fails: 0.002),
+                    SimulatedClient("198.51.100.23", share: 0.1, rejects: 0.3),
+                    .meep(me, "warehouse", "m7", share: 0.05),
+                ]),
+                ModuleSpec("Where", .filter, name: "Valid", from: [0], passes: 0.92, fails: 0.002, queue: 1),
+                ModuleSpec("Fetch", .step, name: "Prices", from: [1], fails: 0.01, queue: 6, address: "https://prices.example.com/v2/{msg.Sku}", rejects: 0.004),
+                ModuleSpec("Save", .outlet, from: [2], queue: 2),
+                ModuleSpec("Send", .outlet, name: "Reply", from: [2]),
+                ModuleSpec("WriteLine", .outlet, name: "Problems", from: [2], errorsOnly: true),
+            ]),
+            PipelineSpec(name: "ticker", modules: [
+                ModuleSpec("Interval", .source, name: "Ticks", rate: 2),
+                ModuleSpec("WriteLine", .outlet, from: [0]),
+                // Declared, but nothing reaches it yet: a flow drawn dashed.
+                ModuleSpec("Send", .outlet, name: "Heartbeat", from: [0], drops: 1, address: "http://simulated.simulated:8001/readings/", peer: me),
+            ]),
+            PipelineSpec(name: "sensors", modules: [
+                ModuleSpec("Listen", .inlet, name: "Readings", rate: 2400, address: "http://0.0.0.0:8001/readings/", clients:
+                    (1...9).map { SimulatedClient("10.1.0.\($0)", name: "sensor-\($0).plant.example.net", share: 0.09) }
+                    + [SimulatedClient("*", share: 0.19)]),
+                ModuleSpec("Listen", .inlet, name: "Backfill", rate: 300, address: "http://0.0.0.0:8001/backfill/", clients: [
+                    .meep(stranger, "collector", "m2", share: 1),
+                ]),
+                ModuleSpec("Batch", .step, from: [0, 1], passes: 0.01, queue: 40, handlingTime: 0.00025),
+                ModuleSpec("Classify", .step, from: [2], fails: 0.03, queue: 3),
+                ModuleSpec("Send", .outlet, name: "Alerts", from: [3], drops: 0.05, address: "https://alerts.example.com/hooks/sensors"),
+                ModuleSpec("Save", .outlet, name: "Rejects", from: [3], errorsOnly: true),
+            ]),
+            PipelineSpec(name: "warehouse", modules: [
+                ModuleSpec("Read", .source, name: "Files", rate: 50),
+                ModuleSpec("Listen", .inlet, name: "Uploads", rate: 30, address: "http://0.0.0.0:8002/uploads/", clients: [
+                    SimulatedClient("192.0.2.44", name: "uploads.partner.example.org", share: 0.7),
+                    SimulatedClient("192.0.2.45", name: "uploads.partner.example.org", share: 0.3, rejects: 0.05),
+                ]),
+                ModuleSpec("Parse", .step, from: [0, 1], fails: 0.02, queue: 2),
+                ModuleSpec("Where", .filter, name: "Fresh", from: [2], passes: 0.7),
+                ModuleSpec("Fetch", .step, name: "Enrich", from: [3], fails: 0.01, queue: 12, address: "https://enrich.example.org/lookup?id={msg.Id}"),
+                ModuleSpec("Where", .filter, name: "Large", from: [4], passes: 0.1),
+                ModuleSpec("Send", .outlet, name: "Archive", from: [4], address: "http://simulated.simulated:8443/orders/", peer: me),
+                ModuleSpec("Save", .outlet, name: "Warehouse", from: [4], queue: 4),
+                ModuleSpec("Send", .outlet, name: "Alerts", from: [5], address: "https://hooks.example.com/alerts"),
+                ModuleSpec("WriteLine", .outlet, name: "Rejects", from: [2], errorsOnly: true),
+                ModuleSpec("WriteLine", .outlet, name: "Problems", from: [4], errorsOnly: true),
+            ]),
+        ]
+    }()
 }

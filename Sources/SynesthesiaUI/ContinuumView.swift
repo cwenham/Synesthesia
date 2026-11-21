@@ -157,7 +157,7 @@ struct ContinuumDetail: View {
                 } else if let host {
                     HostHeader(host: host)
                 } else {
-                    MeshHeader(continuum: continuum)
+                    MeshHeader(continuum: continuum, canvas: workspace.canvas)
                 }
             }
             .padding([.horizontal, .top])
@@ -206,11 +206,9 @@ struct ContinuumDetail: View {
             PipelineDock(pipeline: pipeline, host: host, editor: editor)
                 .id(pipeline.id)
         } else if let host {
-            HostPipelinesTable(host: host, selection: $workspace.selection)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            HostDock(host: host, canvas: workspace.canvas, selection: $workspace.selection)
         } else {
-            HostsTable(continuum: continuum, selection: $workspace.selection)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            MeshDock(continuum: continuum, canvas: workspace.canvas, selection: $workspace.selection)
         }
     }
 }
@@ -256,10 +254,11 @@ private struct PipelineFocus: View {
 /// Where you are, and the whole mesh's roll-up.
 struct MeshHeader: View {
     let continuum: Continuum
+    let canvas: ContinuumStage
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Breadcrumb(parts: ["Continuum"])
+            Breadcrumb(parts: canvas.level == .boundary ? ["Continuum", "Boundary"] : ["Continuum"])
             HStack(spacing: 16) {
                 let reachable = continuum.hosts.filter(\.isReachable)
                 Text("\(continuum.hosts.count) host\(continuum.hosts.count == 1 ? "" : "s"), \(reachable.count) reachable")
@@ -268,6 +267,16 @@ struct MeshHeader: View {
                     .help("Messages a second coming into every pipeline on every host from their sources")
                 Text("\(Format.cores(continuum.hosts.reduce(0) { $0 + $1.load })) cores handling").monospacedDigit().foregroundStyle(.secondary)
                     .help("Processor cores the pipelines on every host keep busy handling messages")
+                let map = canvas.flowMap
+                if !map.flows.isEmpty {
+                    let seen = map.flows.filter(\.observed).count
+                    Text("\(map.flows.count) flow\(map.flows.count == 1 ? "" : "s"), \(seen) seen").foregroundStyle(.secondary)
+                        .help("Flows between pipelines: seen ones are drawn solid, those only declared by a Fetch's or Send's address dashed")
+                }
+                if !map.boundary.isEmpty {
+                    Text("\(map.boundary.count) outside").foregroundStyle(.secondary)
+                        .help("Endpoints outside Meep that the pipelines talk to, drawn round the edge of the mesh")
+                }
                 Spacer()
                 Text("Zoom into a host or a pipeline, or choose one on the left.").font(.caption).foregroundStyle(.secondary)
             }

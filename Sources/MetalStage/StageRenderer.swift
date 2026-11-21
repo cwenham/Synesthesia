@@ -127,7 +127,8 @@ public final class StageRenderer {
         // Wires.
         var segments: [SegmentInstance] = []
         for wire in snapshot.wires {
-            let width = wire.isHovered ? theme.wires.hoveredWidth : theme.wires.width
+            let usual = wire.width ?? theme.wires.width
+            let width = wire.isHovered ? max(theme.wires.hoveredWidth, usual + 1.2) : usual
             let color = wire.isHovered ? wire.color.mixed(with: theme.colors.highlight, by: theme.wires.hoverLighten) : wire.color
             for index in 0..<max(wire.points.count - 1, 0) {
                 segments.append(SegmentInstance(
@@ -138,10 +139,10 @@ public final class StageRenderer {
         }
         counts.segments = segments.count
         if let segmentBuffer = buffer(segments) {
-            var dashes = SIMD2(theme.wires.dashLength, theme.wires.dashDuty)
+            var dashes = SIMD4(theme.wires.dashLength, theme.wires.dashDuty, theme.flows.dashLength, theme.flows.dashDuty)
             encoder.setRenderPipelineState(wires)
             bind(encoder, uniforms: &uniforms, buffer: segmentBuffer)
-            encoder.setFragmentBytes(&dashes, length: MemoryLayout<SIMD2<Float>>.stride, index: 2)
+            encoder.setFragmentBytes(&dashes, length: MemoryLayout<SIMD4<Float>>.stride, index: 2)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: segments.count)
         }
 

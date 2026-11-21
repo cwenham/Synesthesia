@@ -108,6 +108,16 @@ struct ContinuumCanvas: View {
             }
         case .host(let name):
             if let host = canvas.continuum.host(name) { HostCard(host: host) }
+        case .flow(let id):
+            if let pair = canvas.hostFlow(id) {
+                HostFlowCard(from: pair.from, to: pair.to, flows: pair.flows)
+            } else if let flow = canvas.flowMap.flows.first(where: { $0.id == id }) {
+                FlowCard(flow: flow)
+            } else if let (endpoint, _) = canvas.boundaryLink(id) {
+                EndpointCard(endpoint: endpoint)
+            }
+        case .endpoint(let id):
+            if let endpoint = canvas.flowMap.boundary.first(where: { $0.id == id }) { EndpointCard(endpoint: endpoint) }
         }
     }
 }
@@ -123,12 +133,13 @@ struct LevelBadge: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(.black.opacity(0.45), in: Capsule())
-            .help("The canvas zooms from the mesh of hosts, to a host's pipelines, to a pipeline's modules. Double-click a host or pipeline to zoom into it, or the background to see everything.")
+            .help("The canvas zooms from the boundary, where the Continuum meets what's outside Meep, to the mesh of hosts, to a host's pipelines, to a pipeline's modules. Double-click a host or pipeline to zoom into it, or the background to see everything.")
             .allowsHitTesting(true)
     }
 
     private var text: String {
         switch canvas.level {
+        case .boundary: "Boundary"
         case .mesh: "Mesh"
         case .host: "Host"
         case .pipeline: "Pipeline"

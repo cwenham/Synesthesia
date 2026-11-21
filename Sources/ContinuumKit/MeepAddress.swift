@@ -27,10 +27,22 @@ public struct MeepAddress: Hashable, Sendable, CustomStringConvertible, Codable 
     }
 
     public var description: String {
+        let parts = [host, pipeline, module].compactMap { $0 }.map(Self.escaped)
+        return "meep://" + parts.joined(separator: "/")
+    }
+
+    private static let allowed: CharacterSet = {
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/?#")
-        let parts = [host, pipeline, module].compactMap { $0 }.map { $0.addingPercentEncoding(withAllowedCharacters: allowed) ?? $0 }
-        return "meep://" + parts.joined(separator: "/")
+        return allowed
+    }()
+
+    /// A part escaped as in a URL's path; most need nothing, so they're checked quickly first.
+    private static func escaped(_ part: String) -> String {
+        let plain = part.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A) || byte == 0x2D || byte == 0x5F || byte == 0x2E
+        }
+        return plain ? part : part.addingPercentEncoding(withAllowedCharacters: allowed) ?? part
     }
 
     /// The address one level up: a module's pipeline, a pipeline's host. A host is its own parent.

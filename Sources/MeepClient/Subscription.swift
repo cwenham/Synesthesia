@@ -55,24 +55,31 @@ public enum SubscriptionEncoding: String, Sendable, Equatable {
     case json, cbor
 }
 
-/// What to send for one pipeline: its totals, and each module's and link's counts, histograms and bytes, by key or
-/// `"*"` for the rest.
+/// What to send for one pipeline: its totals, and each module's and link's counts, histograms and bytes, and its
+/// Listens' arrivals and its Fetches' and Sends' destinations, by key or `"*"` for the rest.
 public struct PipelinePlan: Sendable, Equatable {
     public var totals: Duration?
     public var modules: [String: Duration]
     public var links: [String: Duration]
     public var timing: [String: Duration]
     public var bytes: [String: Duration]
+    /// What each Listen receives, by where it comes from (Meep2 a5de139).
+    public var arrivals: [String: Duration]
+    /// What each Fetch and Send sends, by where it connected, with which of those are Meep hosts (Meep2 a5de139).
+    public var destinations: [String: Duration]
 
     public init(
         totals: Duration? = nil, modules: [String: Duration] = [:], links: [String: Duration] = [:],
-        timing: [String: Duration] = [:], bytes: [String: Duration] = [:]
+        timing: [String: Duration] = [:], bytes: [String: Duration] = [:], arrivals: [String: Duration] = [:],
+        destinations: [String: Duration] = [:]
     ) {
         self.totals = totals
         self.modules = modules
         self.links = links
         self.timing = timing
         self.bytes = bytes
+        self.arrivals = arrivals
+        self.destinations = destinations
     }
 
     public var json: JSONValue {
@@ -83,6 +90,8 @@ public struct PipelinePlan: Sendable, Equatable {
         if !links.isEmpty { object["links"] = rates(links) }
         if !timing.isEmpty { object["timing"] = rates(timing) }
         if !bytes.isEmpty { object["bytes"] = rates(bytes) }
+        if !arrivals.isEmpty { object["arrivals"] = rates(arrivals) }
+        if !destinations.isEmpty { object["destinations"] = rates(destinations) }
         return .object(object)
     }
 }
@@ -161,18 +170,28 @@ public struct CountOrder: Codable, Sendable, Equatable {
     public var links: [String]
     public var bytes: [String]
     public var totals: [String]
+    /// A Listen's counts for each place messages arrive from; nil from daemons before Meep2 a5de139.
+    public var arrivals: [String]?
+    /// A Fetch's or Send's counts for each place it sends to; nil from daemons before Meep2 a5de139.
+    public var destinations: [String]?
+
+    /// The order of a place's counts in Meep2 a5de139, for arrivals and destinations alike.
+    public static let places = ["received", "sent", "bytesReceived", "bytesSent", "failed", "rejected"]
 
     public static let standard = CountOrder(
         modules: ["received", "handled", "emitted", "passed", "busy", "queued", "dropped", "filtered", "failed", "restarts", "expired", "refused"],
         links: ["carried", "errors"], bytes: ["received", "sent"],
-        totals: ["received", "handled", "emitted", "passed", "busy", "queued", "dropped", "filtered", "failed", "restarts", "expired", "refused", "sourced", "bytesReceived", "bytesSent"]
+        totals: ["received", "handled", "emitted", "passed", "busy", "queued", "dropped", "filtered", "failed", "restarts", "expired", "refused", "sourced", "bytesReceived", "bytesSent"],
+        arrivals: places, destinations: places
     )
 
-    public init(modules: [String], links: [String], bytes: [String], totals: [String]) {
+    public init(modules: [String], links: [String], bytes: [String], totals: [String], arrivals: [String]? = nil, destinations: [String]? = nil) {
         self.modules = modules
         self.links = links
         self.bytes = bytes
         self.totals = totals
+        self.arrivals = arrivals
+        self.destinations = destinations
     }
 }
 
@@ -226,17 +245,21 @@ public struct SubscriptionUpdate: Codable, Sendable, Equatable {
     }
 }
 
-/// The host's totals, its pipelines' states and where its Listens are bound: only what changed.
+/// The host's totals, its pipelines' states, where its Listens are bound and where its Fetches and Sends send: only
+/// what changed.
 public struct HostUpdate: Codable, Sendable, Equatable {
     public var totals: [String: Int64?]?
     /// How many pipelines are in each state.
     public var states: [String: Int?]?
     public var listens: [ListenAddress]?
+    /// Where its Fetches and Sends send, whole when it changes (Meep2 a5de139).
+    public var sends: [SendAddress]?
 
-    public init(totals: [String: Int64?]? = nil, states: [String: Int?]? = nil, listens: [ListenAddress]? = nil) {
+    public init(totals: [String: Int64?]? = nil, states: [String: Int?]? = nil, listens: [ListenAddress]? = nil, sends: [SendAddress]? = nil) {
         self.totals = totals
         self.states = states
         self.listens = listens
+        self.sends = sends
     }
 }
 
@@ -254,10 +277,23 @@ public struct PipelineUpdate: Codable, Sendable, Equatable {
     public var bytes: [String: [Int64?]?]?
     /// Each module's handling-time histogram, whole, when it changed.
     public var timing: [String: TimingHistogram?]?
+    /// Each Listen's counts by where they came from: `meep://<daemon ID>/<pipeline>/<key>` from another Meep host, the
+    /// client's address from outside, and `meep://*` and `*` for what's past its limit. In `hello`'s order.
+    public var arrivals: [String: [String: [Int64?]?]?]?
+    /// Each Fetch's and Send's counts by the `host:port` it connected to, and `*` past its limit.
+    public var destinations: [String: [String: [Int64?]?]?]?
+    /// Names for clients' addresses, from reverse DNS, when found or changed.
+    public var clients: [String: String?]?
+    /// Which destinations are Meep hosts, by their daemons' IDs; null when one stops being known as Meep.
+    public var peers: [String: String?]?
+    /// Places folded into `*` (or `meep://*`) in this update, by module key; their entries are null beside it.
+    public var folded: [String: [String]]?
 
     public init(
         graph: GraphStamp? = nil, totals: [String: Int64?]? = nil, modules: [String: [Int64?]?]? = nil,
-        links: [String: [Int64?]?]? = nil, bytes: [String: [Int64?]?]? = nil, timing: [String: TimingHistogram?]? = nil
+        links: [String: [Int64?]?]? = nil, bytes: [String: [Int64?]?]? = nil, timing: [String: TimingHistogram?]? = nil,
+        arrivals: [String: [String: [Int64?]?]?]? = nil, destinations: [String: [String: [Int64?]?]?]? = nil,
+        clients: [String: String?]? = nil, peers: [String: String?]? = nil, folded: [String: [String]]? = nil
     ) {
         self.graph = graph
         self.totals = totals
@@ -265,6 +301,11 @@ public struct PipelineUpdate: Codable, Sendable, Equatable {
         self.links = links
         self.bytes = bytes
         self.timing = timing
+        self.arrivals = arrivals
+        self.destinations = destinations
+        self.clients = clients
+        self.peers = peers
+        self.folded = folded
     }
 }
 

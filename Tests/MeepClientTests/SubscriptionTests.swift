@@ -6,6 +6,14 @@ import Testing
 /// with names, addresses and paths made anonymous: `hello`, the first update (everything whole), a later one (only
 /// what changed), and the `plan` answering a change. The CBOR ones are the same daemon's, asked for in CBOR.
 struct SubscriptionContractTests {
+    /// The counts' order from Meep2 0c83a49, before arrivals and destinations.
+    static var beforeFlows: CountOrder {
+        var order = CountOrder.standard
+        order.arrivals = nil
+        order.destinations = nil
+        return order
+    }
+
     private func fixture(_ name: String, _ ext: String = "json") throws -> Data {
         let url = try #require(Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "Fixtures"))
         return try Data(contentsOf: url)
@@ -29,7 +37,7 @@ struct SubscriptionContractTests {
         }
         #expect(hello.host.id == "98254d9a-206f-4759-92b5-927ab74d3254")
         #expect(hello.host.version == "1.0.0")
-        #expect(hello.counts == .standard)
+        #expect(hello.counts == Self.beforeFlows, "0c83a49 has no arrivals or destinations")
         #expect(hello.timing == TimingScale(scale: 3, unit: "s"))
         #expect(hello.plan?["pipelines"]?["busy"]?["modules"]?["*"] == "500ms")
     }
@@ -100,7 +108,7 @@ struct SubscriptionContractTests {
             return
         }
         #expect(said.host.id == "98254d9a-206f-4759-92b5-927ab74d3254")
-        #expect(said.counts == .standard)
+        #expect(said.counts == Self.beforeFlows)
         #expect(said.plan?["encoding"] == "cbor")
         let first = try CBOR.json(from: fixture("subscribe-first", "cbor"))
         guard case .update(let update)? = try MeepJSON.subscriptionEvent(from: first) else {

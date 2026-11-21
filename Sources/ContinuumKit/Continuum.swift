@@ -95,6 +95,8 @@ public final class MeepHost: Identifiable {
     public internal(set) var identity: HostIdentity?
     /// Where its Listens are bound.
     public internal(set) var listens: [ListenAddress] = []
+    /// Where its Fetches and Sends send, as declared when their pipelines started (Meep2 a5de139).
+    public internal(set) var sends: [SendAddress] = []
     /// How far its clock is ahead of this Mac's, in seconds, estimated from when its updates arrive.
     public internal(set) var clockOffset: Double?
     /// How its connection reaches it, when there's more to say than its kind: through a forwarded socket, or relayed.
@@ -206,8 +208,14 @@ public final class MeepPipeline: Identifiable {
     public var watchers = 0
     /// How much the canvas shows of it, for the planner to ask for what's drawn and no more (design, section 4).
     public var shownAs: SubscriptionPlanner.Detail = .listed
+    /// How much of its flows and boundary the canvas draws, for the planner to ask for its places only then.
+    public var flowsShownAs: SubscriptionPlanner.FlowDetail = .none
     /// Its totals: each count added up over its modules by the daemon, with `sourced` and its bytes.
     public internal(set) var totals = CountSet()
+    /// Names for the addresses of clients outside Meep that its Listens have heard from, by reverse DNS.
+    public internal(set) var clients: [String: String] = [:]
+    /// Which of the places its Fetches and Sends connect to are Meep hosts, by `host:port`: their daemons' IDs.
+    public internal(set) var peers: [String: String] = [:]
     /// The latest counts for its links, kept for links its graph hasn't got yet: the counts can arrive first.
     @ObservationIgnored private var linkCounts: (counts: [String: LinkDetail], time: Double)?
 
@@ -282,6 +290,12 @@ public final class MeepPipeline: Identifiable {
     /// canvas draws of it.
     public var detail: SubscriptionPlanner.Detail {
         watchers > 0 ? .full : shownAs
+    }
+
+    /// How much of its flows the planner should ask for: every second while a view shows it in detail, otherwise what
+    /// the canvas draws.
+    public var flowDetail: SubscriptionPlanner.FlowDetail {
+        watchers > 0 ? max(flowsShownAs, .close) : flowsShownAs
     }
 
     /// Whether its graph is older than its counts, so it should be fetched again.
@@ -442,6 +456,16 @@ public final class MeepModule: Identifiable {
     public internal(set) var traffic: CountSet?
     /// When its counts were last read, in seconds on the session's clock.
     public internal(set) var lastRead: Double?
+    /// A Listen's counts by where messages came from, or a Fetch's or Send's by where it connected, in
+    /// ``CountOrder/places``' names, with their rates (Meep2 a5de139). `*` and `meep://*` hold what's past its limit.
+    public internal(set) var places: [String: CountSet] = [:]
+    /// Which kind its ``places`` are.
+    public internal(set) var placeKind: PlaceKind?
+    /// When its places were last read.
+    public internal(set) var placesRead: Double?
+    /// Whether its places are being followed now. While they aren't, their counts are as last seen and their rates
+    /// mean nothing.
+    public internal(set) var placesFollowed = false
     private var busyMeter = RateMeter()
 
     /// How busy it is, from 0 to 1: its handling time a second. A module handles one message at a time, so near 1
@@ -486,6 +510,40 @@ public final class MeepModule: Identifiable {
         history.record(activity, at: time)
     }
 
+    /// Takes its places from a subscription: `folded` first, each one's counts carried into `*` (or `meep://*`), so
+    /// `*`'s rate doesn't jump; then the counts that changed, in `order`, null keeping a count as it was; then reads
+    /// every place at `time`. With nil, reads them all again as unchanged.
+    func apply(places values: [String: [Int64?]?]?, kind: PlaceKind, order: [String], folded: [String], at time: Double) {
+        placeKind = kind
+        for place in folded {
+            guard let counts = places.removeValue(forKey: place) else { continue }
+            let star = place.hasPrefix("meep://") ? "meep://*" : "*"
+            places[star, default: CountSet()].carry(counts)
+        }
+        for (place, counts) in values ?? [:] {
+            guard let counts else {
+                places.removeValue(forKey: place)
+                continue
+            }
+            var changed: [String: Int64?] = [:]
+            for (index, value) in counts.enumerated() where index < order.count {
+                if let value { changed[order[index]] = value }
+            }
+            places[place, default: CountSet()].read(changed, at: time)
+        }
+        for place in places.keys where values?[place] == nil {
+            places[place]?.read(at: time)
+        }
+        placesRead = time
+        placesFollowed = true
+    }
+
+    /// Forgets its places, as when the host says it has none.
+    func clearPlaces() {
+        places = [:]
+        placesRead = nil
+    }
+
     /// Takes its bytes from a subscription, `[received, sent]`.
     func apply(traffic values: [Int64?]?, at time: Double) {
         var set = traffic ?? CountSet()
@@ -520,6 +578,14 @@ public final class MeepModule: Identifiable {
         role = graph.verbRole
         inflections = graph.inflections
     }
+}
+
+/// Which way a module's places face.
+public enum PlaceKind: String, Sendable {
+    /// A Listen's: where what it receives came from.
+    case arrivals
+    /// A Fetch's or Send's: where it connected to send.
+    case destinations
 }
 
 extension ModuleStats {
@@ -616,6 +682,8 @@ public struct HostTraffic: Sendable, Equatable {
     public internal(set) var problem: String?
     /// What's asked for: how many pipelines in each level of detail.
     public internal(set) var detail: [SubscriptionPlanner.Detail: Int] = [:]
+    /// How many pipelines' flows are asked for, at each distance.
+    public internal(set) var flows: [SubscriptionPlanner.FlowDetail: Int] = [:]
 
     public init() {}
 }

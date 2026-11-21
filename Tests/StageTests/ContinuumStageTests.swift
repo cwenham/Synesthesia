@@ -114,7 +114,9 @@ struct ContinuumStageTests {
         #expect(focused.isEmpty, "nothing settles while it moves")
         run(canvas, from: &time, for: 0.6)
         #expect(focused.last == .some(nil))
-        #expect(canvas.level == .mesh)
+        // So far out that every host is a node: the edge of the Continuum, level 6.
+        #expect(canvas.drawsNodes)
+        #expect(canvas.level == .boundary)
         // Zooming back in over the same place settles on the pipeline again, past its host.
         for _ in 0..<12 {
             canvas.zoom(by: 1 / 0.7, at: CGPoint(x: size.width / 2, y: size.height / 2))

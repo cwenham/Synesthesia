@@ -68,6 +68,74 @@ struct ContinuumRendererTests {
         #expect(renderer.lastCounts.particles + renderer.lastCounts.streamed > 0)
     }
 
+    /// Flows between hosts and pipelines, and the boundary round the mesh: at the mesh's distance, with hosts as nodes,
+    /// and at a host's.
+    @Test func flowsAndTheBoundaryAreDrawn() async throws {
+        let renderer = try #require(StageRenderer())
+        let continuum = Continuum()
+        let simulatedID = SimulatedHost.id(for: "simulated")
+        let specs: [(String, [PipelineSpec])] = [
+            ("simulated", PipelineSpec.demo),
+            ("edge", [
+                PipelineSpec(name: "checkout", modules: [
+                    .init("Listen", .inlet, name: "Basket", rate: 30, address: "http://0.0.0.0:9443/basket/", clients: [
+                        SimulatedClient("203.0.113.70", name: "shop.example.com", share: 0.8),
+                        SimulatedClient("203.0.113.71", name: "app.example.com", share: 0.2, rejects: 0.2),
+                    ]),
+                    .init("Fetch", .step, name: "Place order", from: [0], fails: 0.03, address: "http://simulated.simulated:8443/orders/", peer: simulatedID),
+                    .init("Send", .outlet, name: "Receipt", from: [1], address: "https://mail.example.org/send"),
+                ]),
+            ]),
+            ("lab", [PipelineSpec.demo[1]]),
+        ]
+        var sessions: [HostSession] = []
+        for (name, pipelines) in specs {
+            let host = continuum.add(host: name, kind: .simulated)
+            let link = SimulatedHost(name: name, latency: .milliseconds(1), pipelines: pipelines)
+            let session = HostSession(host: host, settings: .init(replanEvery: .milliseconds(80), rateScale: 0.4)) { link }
+            session.start()
+            sessions.append(session)
+        }
+        defer { sessions.forEach { $0.stop() } }
+        let canvas = ContinuumStage(continuum: continuum)
+        var time = ProcessInfo.processInfo.systemUptime
+        func settle(_ seconds: Double) async throws {
+            let end = ProcessInfo.processInfo.systemUptime + seconds
+            while ProcessInfo.processInfo.systemUptime < end {
+                time = ProcessInfo.processInfo.systemUptime
+                _ = canvas.frame(at: time, viewSize: size)
+                try await Task.sleep(for: .milliseconds(16))
+            }
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        while !(canvas.flowMap.flows.contains { $0.crossesHosts && $0.observed } && canvas.flowMap.boundary.count >= 8) {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw CancellationError() }
+            time = ProcessInfo.processInfo.systemUptime
+            _ = canvas.frame(at: time, viewSize: size)
+            try await Task.sleep(for: .milliseconds(150))
+        }
+        canvas.show(nil, animated: false)
+        try await settle(2.5)
+        var snapshot = canvas.frame(at: time, viewSize: size)
+        StageRendererTests().save(try #require(renderer.image(of: snapshot, size: size)), as: "flows-mesh")
+        #expect(snapshot.wires.contains { $0.kind == .flow && $0.id.hasPrefix("flow:meep://edge/checkout/m2") })
+        #expect(snapshot.wires.contains { $0.kind == .declared }, "the ticker's heartbeat, declared only")
+        #expect(snapshot.labelPlates.contains { $0.id.hasPrefix("endpoint:") })
+
+        canvas.showBoundary(animated: false)
+        try await settle(0.5)
+        snapshot = canvas.frame(at: time, viewSize: size)
+        StageRendererTests().save(try #require(renderer.image(of: snapshot, size: size)), as: "flows-boundary")
+        #expect(canvas.level == .boundary)
+        #expect(snapshot.wires.contains { $0.id == "flow:hosts:edge>simulated" })
+
+        canvas.show(MeepAddress(host: "simulated"), animated: false)
+        try await settle(1.5)
+        snapshot = canvas.frame(at: time, viewSize: size)
+        StageRendererTests().save(try #require(renderer.image(of: snapshot, size: size)), as: "flows-host")
+        #expect(snapshot.wires.contains { $0.id.hasPrefix("flow:meep://simulated/warehouse/m7") }, "between districts on one host")
+    }
+
     /// Three simulated hosts of different sizes, one with a clock that's a second and a half ahead.
     private func mesh() async throws -> (Continuum, [HostSession]) {
         let continuum = Continuum()

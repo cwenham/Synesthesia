@@ -97,3 +97,37 @@ struct SubscriptionPlannerTests {
         #expect(SubscriptionPlanner.nice(seconds) == nice)
     }
 }
+
+/// Asking for places (arrivals and destinations) only for flows on screen, at the design's refresh for each level.
+struct FlowPlanningTests {
+    private let shapes = [
+        "front": SubscriptionPlanner.Shape(modules: 4, links: 3, network: 2),
+        "busy": SubscriptionPlanner.Shape(modules: 4, links: 3, network: 0),
+    ]
+
+    @Test func placesFollowTheDistanceFlowsAreSeenAt() {
+        let planner = SubscriptionPlanner(budget: nil)
+        let far = planner.rates(for: [:], flows: ["front": .far], shapes: shapes, others: 1)
+        #expect(far.pipelines["front"]?.places == 5, "the boundary's refresh")
+        #expect(far.pipelines["front"]?.modules == nil, "flows alone don't ask for modules")
+        #expect(planner.rates(for: ["front": .totals], flows: ["front": .near], shapes: shapes, others: 1).pipelines["front"]?.places == 2)
+        #expect(planner.rates(for: ["front": .full], flows: ["front": .close], shapes: shapes, others: 1).pipelines["front"]?.places == 1)
+        // Not shown: none.
+        #expect(planner.rates(for: ["front": .totals], flows: [:], shapes: shapes, others: 1).pipelines["front"]?.places == nil)
+    }
+
+    @Test func aPipelineWithNothingThatCountsPlacesIsntAskedForThem() {
+        let rates = SubscriptionPlanner(budget: nil).rates(for: [:], flows: ["busy": .close], shapes: shapes, others: 1)
+        #expect(rates.pipelines["busy"] == nil)
+    }
+
+    @Test func placesCostSomethingAndSlowDownWithTheRest() {
+        let planner = SubscriptionPlanner(budget: nil)
+        let without = planner.rates(for: ["front": .totals], shapes: shapes, others: 0)
+        let with = planner.rates(for: ["front": .totals], flows: ["front": .close], shapes: shapes, others: 0)
+        #expect(with.estimate > without.estimate)
+        let tight = SubscriptionPlanner(budget: 200).rates(for: ["front": .totals], flows: ["front": .close], shapes: shapes, others: 0)
+        #expect(tight.slowdown > 1)
+        #expect((tight.pipelines["front"]?.places ?? 0) > 1)
+    }
+}

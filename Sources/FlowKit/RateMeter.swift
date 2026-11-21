@@ -46,6 +46,13 @@ public struct RateMeter: Sendable, Equatable {
         measured = false
     }
 
+    /// Takes `amount` into the last reading without counting it as new: what another count had, folded into this one,
+    /// so the next reading's rise doesn't count it again.
+    public mutating func carry(_ amount: Int64) {
+        guard let last else { return }
+        self.last = (last.time, last.value + amount)
+    }
+
     public static func == (lhs: RateMeter, rhs: RateMeter) -> Bool {
         lhs.rate == rhs.rate && lhs.smoothing == rhs.smoothing && lhs.last?.time == rhs.last?.time
             && lhs.last?.value == rhs.last?.value && lhs.measured == rhs.measured
@@ -155,6 +162,15 @@ public struct CountSet: Sendable, Equatable {
     public func rate(_ key: String) -> Double { meters[key]?.rate ?? 0 }
 
     public var isEmpty: Bool { values.isEmpty }
+
+    /// Takes another set's counts into this one, without their rise counting as new: a place folded into `*`, whose
+    /// counts the daemon adds to `*`'s from now on.
+    public mutating func carry(_ other: CountSet) {
+        for (key, value) in other.values {
+            values[key, default: 0] += value
+            meters[key]?.carry(value)
+        }
+    }
 
     public mutating func reset() {
         values = [:]

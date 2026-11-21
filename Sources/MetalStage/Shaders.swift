@@ -319,7 +319,7 @@ struct Segment {
     float2 a;
     float2 b;
     float width;        // pixels
-    int kind;           // 0 main, 1 errors, 2 backward
+    int kind;           // 0 main, 1 errors, 2 backward, 3 declared flow, 4 flow
     float along;        // length of the wire before this segment
     float padding;
 };
@@ -355,7 +355,7 @@ vertex SegmentOut wire_vertex(uint vid [[vertex_id]], uint iid [[instance_id]], 
 }
 
 fragment float4 wire_fragment(SegmentOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
-                              constant Segment* segments [[buffer(1)]], constant float2& dashes [[buffer(2)]]) {
+                              constant Segment* segments [[buffer(1)]], constant float4& dashes [[buffer(2)]]) {
     Segment s = segments[in.index];
     float px = pixel(u);
     float along = clamp(in.local.x, 0.0, in.length);
@@ -364,6 +364,10 @@ fragment float4 wire_fragment(SegmentOut in [[stage_in]], constant Uniforms& u [
     if (s.kind == 2) {
         float dash = fract((s.along + in.local.x) / max(dashes.x, 0.5));
         coverage *= step(dash, dashes.y);
+    } else if (s.kind == 3) {
+        // A declared flow's dashes keep their length on screen, at every zoom.
+        float dash = fract((s.along + in.local.x) / max(dashes.z * px, 1e-6));
+        coverage *= step(dash, dashes.w);
     }
     return premultiply(s.color.rgb, s.color.a * coverage);
 }

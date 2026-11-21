@@ -1,6 +1,7 @@
 import ContinuumKit
 import CoreGraphics
 import FlowKit
+import LayoutKit
 import Foundation
 import MeepClient
 import Observation
@@ -13,28 +14,44 @@ public enum ContinuumHit: Hashable, Sendable {
     case pipeline(MeepAddress)
     /// A tile or wire of a pipeline drawn in full.
     case inside(MeepAddress, StageHit)
+    /// A flow between pipelines, by its ``MeshFlow/id``, or between hosts drawn as nodes, as `hosts:<from>><to>`.
+    case flow(String)
+    /// An endpoint on the boundary, by its ``BoundaryEndpoint/id``.
+    case endpoint(String)
 
-    /// The address of what was hit: a host, a pipeline, or a module.
-    public var address: MeepAddress {
+    /// The address of what was hit: a host, a pipeline, or a module; nil for a flow or the boundary.
+    public var address: MeepAddress? {
         switch self {
         case .host(let name): MeepAddress(host: name)
         case .pipeline(let address): address
         case .inside(let address, .tile(let key)): address.module(key)
         case .inside(let address, .wire): address
+        case .flow, .endpoint: nil
+        }
+    }
+
+    /// What was hit, in words: an address, or a flow's or endpoint's ID.
+    public var description: String {
+        switch self {
+        case .flow(let id): "flow \(id)"
+        case .endpoint(let id): "boundary \(id)"
+        default: address?.description ?? ""
         }
     }
 }
 
-/// The levels of the zoom ladder the canvas draws (design, section 2): 3 to 5.
+/// The levels of the zoom ladder the canvas draws (design, section 2): 3 to 6.
 public enum ZoomLevel: String, Sendable, Comparable {
-    /// Hosts as nodes, or plates with their pipelines on them.
+    /// The edge of the Continuum: hosts as nodes, and the endpoints outside Meep round them.
+    case boundary
+    /// Hosts as plates with their pipelines on them, and the flows between them.
     case mesh
     /// One host's pipelines as districts.
     case host
     /// One pipeline's modules as tiles.
     case pipeline
 
-    private var rank: Int { self == .mesh ? 0 : self == .host ? 1 : 2 }
+    private var rank: Int { self == .boundary ? -1 : self == .mesh ? 0 : self == .host ? 1 : 2 }
     public static func < (a: ZoomLevel, b: ZoomLevel) -> Bool { a.rank < b.rank }
 }
 
@@ -57,7 +74,7 @@ public final class ContinuumStage {
     /// What the view is about: the pipeline or host it has settled on, or nil for the mesh.
     public private(set) var focus: MeepAddress?
     /// The level the view is at, from what it's settled on.
-    public private(set) var level: ZoomLevel = .mesh
+    public internal(set) var level: ZoomLevel = .mesh
     /// Called when the person has moved the view and it has settled on something else, for the app to select it.
     @ObservationIgnored public var onFocus: ((MeepAddress?) -> Void)?
     /// A plate clicked, for the app to select.
@@ -65,21 +82,39 @@ public final class ContinuumStage {
     /// What's selected, drawn lit: a host or a pipeline.
     @ObservationIgnored public var selected: MeepAddress?
 
-    @ObservationIgnored private var stages: [String: PipelineStage] = [:]
-    @ObservationIgnored private var hostPlaces: [String: Placed] = [:]
-    @ObservationIgnored private var districtPlaces: [String: Placed] = [:]
-    @ObservationIgnored private var everything: CGRect = .zero
+    @ObservationIgnored var stages: [String: PipelineStage] = [:]
+    @ObservationIgnored var hostPlaces: [String: Placed] = [:]
+    @ObservationIgnored var districtPlaces: [String: Placed] = [:]
+    @ObservationIgnored var everything: CGRect = .zero
     @ObservationIgnored private var signature = ""
 
-    @ObservationIgnored private var camera = Camera(scale: 0.1)
-    @ObservationIgnored private var cameraEasing: Easing<Camera>?
-    @ObservationIgnored private var viewSize: CGSize = .zero
-    @ObservationIgnored private var time: Double = 0
+    /// The flows and the boundary, worked out from the Continuum four times a second: views beside the canvas read
+    /// them from here rather than working them out on every update.
+    public private(set) var flowMap = FlowMap()
+    @ObservationIgnored private var flowMapAt: Double = -.infinity
+    /// Each endpoint's place round the edge, as a point eased like a plate, and its angle.
+    @ObservationIgnored var endpointPlaces: [String: Placed] = [:]
+    @ObservationIgnored var endpointAngles: [String: Double] = [:]
+    @ObservationIgnored var boundarySignature = ""
+    /// Where the mesh's hosts are, with room for their headers: the region the boundary sits round.
+    @ObservationIgnored var meshBounds: CGRect = .zero
+    /// Particles along each flow and boundary link, worked out in points on screen.
+    @ObservationIgnored var flowParticles: [String: Flow] = [:]
+    /// What was drawn last frame, for the pointer: flows' paths and endpoints' markers, in world units.
+    @ObservationIgnored var drawnFlows: [(id: String, wire: StageWire)] = []
+    @ObservationIgnored var drawnEndpoints: [(id: String, frame: CGRect)] = []
+
+    @ObservationIgnored var camera = Camera(scale: 0.1)
+    @ObservationIgnored var cameraEasing: Easing<Camera>?
+    @ObservationIgnored var viewSize: CGSize = .zero
+    @ObservationIgnored var time: Double = 0
     @ObservationIgnored private var fitted = false
     /// Waiting to show something once the view has a size.
-    @ObservationIgnored private var pendingShow: MeepAddress??
+    @ObservationIgnored var pendingShow: MeepAddress??
+    /// Waiting to show the boundary once the view has a size.
+    @ObservationIgnored var pendingBoundary = false
     /// When the person last moved the view; it settles on a focus a moment after.
-    @ObservationIgnored private var movedAt: Double?
+    @ObservationIgnored var movedAt: Double?
     /// Whether the view keeps showing its focus whole as hosts and pipelines come and go, until the person moves it.
     @ObservationIgnored private var followsLayout = true
     @ObservationIgnored private var pastClosest: CGFloat = 1
@@ -90,7 +125,7 @@ public final class ContinuumStage {
     @ObservationIgnored private var starOpacity: Float = 0
 
     /// Where something is, and where it was, while it eases to a new place.
-    private struct Placed {
+    struct Placed {
         var frame: CGRect
         var from: CGRect?
         var start: Double
@@ -148,7 +183,13 @@ public final class ContinuumStage {
         self.time = time
         if Theme.current != theme { theme = Theme.current; signature = "" }
         advanceStars(by: elapsed)
+        if time - flowMapAt > 0.25 || time < flowMapAt {
+            flowMapAt = time
+            let map = continuum.flowMap()
+            if map != flowMap { flowMap = map }
+        }
         layOut()
+        placeBoundary()
         if size != viewSize {
             let first = viewSize.width == 0
             viewSize = size
@@ -156,7 +197,12 @@ public final class ContinuumStage {
                 fitted = true
                 let target = pendingShow ?? nil
                 pendingShow = nil
-                show(target, animated: false)
+                if pendingBoundary, target == nil {
+                    pendingBoundary = false
+                    showBoundary(animated: false)
+                } else {
+                    show(target, animated: false)
+                }
             } else if followsLayout, focus?.module == nil, let target = target(for: focus) {
                 // The view changed size, as when what's above or below it changed: what it shows whole stays whole.
                 if cameraEasing != nil {
@@ -171,6 +217,7 @@ public final class ContinuumStage {
             if easing.isDone(at: time) { cameraEasing = nil }
         }
         settleIfStill()
+        followBoundaryLevel()
 
         var snapshot = StageSnapshot()
         snapshot.camera = camera
@@ -187,6 +234,7 @@ public final class ContinuumStage {
         let plate = plateness
         let tilesShown = scale >= look.tilesFrom && plate > 0.99
         var nodeLabels: [NodeLabel] = []
+        addContinuumRegion(opacity: plate, into: &snapshot)
 
         for host in continuum.hosts {
             guard let hostFrame = hostPlaces[host.name]?.at(time) else { continue }
@@ -212,16 +260,22 @@ public final class ContinuumStage {
                 let detail: SubscriptionPlanner.Detail = !onScreen ? .listed
                     : level == .pipeline && focus == pipeline.address ? .full : tilesShown ? .modules : .totals
                 if pipeline.shownAs != detail { pipeline.shownAs = detail }
+                // Its flows: every second with its tiles showing, every 2 s as a district, every 5 s inside a node.
+                let nodeOnScreen = plate < 0.5 && hostFrame.insetBy(dx: -hostFrame.width, dy: -hostFrame.height).intersects(screen)
+                let flows: SubscriptionPlanner.FlowDetail = plate < 0.5 ? (nodeOnScreen ? .far : .none) : onScreen ? (tilesShown ? .close : .near) : .none
+                if pipeline.flowsShownAs != flows { pipeline.flowsShownAs = flows }
                 guard onScreen else { continue }
                 addDistrict(pipeline, host: host, frame: frame, opacity: plate, tiles: tilesShown, into: &snapshot)
             }
         }
-        placeNodeLabels(nodeLabels, into: &snapshot)
+        addFlows(plate: plate, tiles: tilesShown, screen: screen, elapsed: elapsed, into: &snapshot)
+        let endpointLabels = addBoundary(plate: plate, screen: screen, elapsed: elapsed, into: &snapshot)
+        placeNodeLabels(nodeLabels + endpointLabels, into: &snapshot)
         return snapshot
     }
 
-    /// A node's name and roll-up, waiting to be placed.
-    private struct NodeLabel {
+    /// A node's or an endpoint's name and roll-up, waiting to be placed.
+    struct NodeLabel {
         var texts: [StageText]
         /// Where the label and its node are on screen, in view points.
         var area: CGRect
@@ -235,7 +289,12 @@ public final class ContinuumStage {
     private func placeNodeLabels(_ labels: [NodeLabel], into snapshot: inout StageSnapshot) {
         var taken: [CGRect] = []
         for label in labels.sorted(by: { $0.importance > $1.importance }) {
-            let hoveredHere = labels.count > 1 && hovered.map { hit in label.texts.first?.tile == "node:\(hit.address.host)" } == true
+            let hoveredHere = labels.count > 1 && hovered.map { hit in
+                switch hit {
+                case .endpoint(let id): label.texts.first?.tile == "endpoint:\(id)"
+                default: label.texts.first?.tile == "node:\(hit.address?.host ?? "")"
+                }
+            } == true
             let clear = !taken.contains { $0.intersects(label.area) } && !labels.contains { $0.node != label.node && $0.node.intersects(label.area) }
             guard clear || hoveredHere else { continue }
             taken.append(label.area)
@@ -253,7 +312,7 @@ public final class ContinuumStage {
     public var drawsNodes: Bool { plateness < 0.5 }
 
     /// How much hosts are drawn as plates rather than nodes, from 0 to 1, from how wide they are on screen on average.
-    private var plateness: Float {
+    var plateness: Float {
         let widths = hostPlaces.values.map(\.frame.width)
         guard !widths.isEmpty else { return 1 }
         let mean = widths.reduce(0, +) / CGFloat(widths.count)
@@ -275,7 +334,7 @@ public final class ContinuumStage {
     }
 
     /// Text that keeps its size on screen, as world units at the current zoom.
-    private func worldFont(_ font: StageFont) -> StageFont {
+    func worldFont(_ font: StageFont) -> StageFont {
         StageFont(size: font.size / camera.scale, weight: font.weight, monospacedDigits: font.monospacedDigits)
     }
 
@@ -427,7 +486,7 @@ public final class ContinuumStage {
 
     /// Packs each host's pipelines into districts, and the hosts into the mesh, when what's there or its sizes change.
     /// Districts and hosts that move ease to their new places, and pipelines' tiles with them.
-    private func layOut() {
+    func layOut() {
         let look = theme.continuum
         var hostSizes: [(host: MeepHost, size: CGSize, districts: [(MeepPipeline, CGRect)])] = []
         var key = "\(look.hostGap),\(look.districtGap)"
@@ -451,6 +510,10 @@ public final class ContinuumStage {
             hostSizes.append((host, size, districts))
             key += "#\(host.name):\(host.pipelines.count)"
         }
+        // The flows between hosts pull them together: which hosts, and whether seen, not how busy, so the mesh moves
+        // only when what talks to what changes.
+        let edges = hostEdges()
+        key += "~" + edges.map { "\($0.a)>\($0.b):\($0.weight)" }.joined(separator: ",")
         guard key != signature else { return }
         let first = signature.isEmpty && hostPlaces.isEmpty
         signature = key
@@ -461,7 +524,17 @@ public final class ContinuumStage {
             }
         }
 
-        let (hostOrigins, _) = Self.shelfPack(hostSizes.map(\.size), gap: look.hostGap, aspect: 2.2)
+        // The mesh: a damped force layout (design, section 7), from where each host was.
+        let centres = ForceLayout(gap: look.hostGap, aspect: 1.8).layOut(
+            hostSizes.map { entry in
+                ForceLayout.Node(id: entry.host.name, size: entry.size, position: hostPlaces[entry.host.name].map { CGPoint(x: $0.frame.midX, y: $0.frame.midY) })
+            },
+            edges: edges
+        )
+        let hostOrigins = hostSizes.map { entry in
+            let centre = centres[entry.host.name] ?? .zero
+            return CGPoint(x: centre.x - entry.size.width / 2, y: centre.y - entry.size.height / 2)
+        }
         var newHosts: [String: Placed] = [:]
         var newDistricts: [String: Placed] = [:]
         var all = CGRect.null
@@ -482,12 +555,14 @@ public final class ContinuumStage {
         hostPlaces = newHosts
         districtPlaces = newDistricts
         // Room above for the top row's headers, which sit over their plates.
-        everything = all.isNull ? .zero : CGRect(x: all.minX, y: all.minY - 320, width: all.width, height: all.height + 320)
+        meshBounds = all.isNull ? .zero : CGRect(x: all.minX, y: all.minY - 320, width: all.width, height: all.height + 320)
+        everything = meshBounds
+        boundarySignature = ""
         let shown = Set(newDistricts.keys)
         stages = stages.filter { shown.contains($0.key) }
     }
 
-    private func place(_ frame: CGRect, was: Placed?, first: Bool) -> Placed {
+    func place(_ frame: CGRect, was: Placed?, first: Bool) -> Placed {
         guard let was, !first, was.frame != frame else { return was.map { Placed(frame: frame, from: $0.from, start: $0.start) } ?? Placed(frame: frame, from: nil, start: time) }
         return Placed(frame: frame, from: was.at(time), start: time)
     }
@@ -538,7 +613,7 @@ public final class ContinuumStage {
         return min(Camera.minimumScale, all.scale * 0.5)
     }
 
-    private func fitting(_ rect: CGRect, cap: CGFloat = 1.5, margin: CGFloat = 40) -> Camera {
+    func fitting(_ rect: CGRect, cap: CGFloat = 1.5, margin: CGFloat = 40) -> Camera {
         guard rect.width > 0, rect.height > 0, viewSize.width > margin * 2, viewSize.height > margin * 2 else {
             return Camera(center: CGPoint(x: rect.midX, y: rect.midY), scale: camera.scale)
         }
@@ -546,7 +621,7 @@ public final class ContinuumStage {
         return Camera(center: CGPoint(x: rect.midX, y: rect.midY), scale: min(max(scale, 0.002), Camera.maximumScale))
     }
 
-    private func ease(to target: Camera) {
+    func ease(to target: Camera) {
         cameraEasing = Easing(from: camera, to: target, start: time)
     }
 
@@ -555,6 +630,7 @@ public final class ContinuumStage {
     public func show(_ address: MeepAddress?, animated: Bool = true) {
         guard viewSize.width > 0 else {
             pendingShow = .some(address)
+            pendingBoundary = false
             return
         }
         layOut()
@@ -577,8 +653,10 @@ public final class ContinuumStage {
             target = fitting(CGRect(x: frame.minX, y: frame.minY - 200, width: frame.width, height: frame.height + 200), cap: 0.8)
             setFocus(MeepAddress(host: address.host))
         } else {
-            target = fitting(everything, cap: 0.5)
+            // The mesh: its hosts whole, as plates; the boundary round them is further out.
+            level = .mesh
             setFocus(nil)
+            target = fitting(meshBounds.isEmpty ? everything : meshBounds, cap: 0.5)
         }
         guard let target else { return }
         if animated {
@@ -597,12 +675,14 @@ public final class ContinuumStage {
         if let address {
             return hostPlaces[address.host].map { fitting(CGRect(x: $0.frame.minX, y: $0.frame.minY - 200, width: $0.frame.width, height: $0.frame.height + 200), cap: 0.8) }
         }
-        return everything.isEmpty ? nil : fitting(everything, cap: 0.5)
+        if level == .boundary { return boundaryTarget() }
+        let mesh = meshBounds.isEmpty ? everything : meshBounds
+        return mesh.isEmpty ? nil : fitting(mesh, cap: 0.5)
     }
 
-    /// Shows the whole of what the view is about, or the whole mesh, eased.
+    /// Shows the whole of what the view is about: a pipeline, a host, the mesh, or the boundary round it, eased.
     public func fit() {
-        show(focus)
+        if focus == nil, level == .boundary { showBoundary() } else { show(focus) }
     }
 
     /// Scrolling moves the view, as content dragged by `offset` view points.
@@ -664,9 +744,9 @@ public final class ContinuumStage {
         }
     }
 
-    private func setFocus(_ address: MeepAddress?) {
+    func setFocus(_ address: MeepAddress?) {
         if focus != address { focus = address }
-        let level: ZoomLevel = address?.pipeline != nil ? .pipeline : address != nil ? .host : .mesh
+        let level: ZoomLevel = address?.pipeline != nil ? .pipeline : address != nil ? .host : self.level == .boundary && plateness < 0.6 ? .boundary : .mesh
         if self.level != level { self.level = level }
     }
 
@@ -694,9 +774,17 @@ public final class ContinuumStage {
 
     // MARK: Pointer
 
-    /// What's at `point`, in view points: a pipeline's tile or wire when it's drawn in full, else a pipeline's plate,
-    /// else a host.
+    /// What's at `point`, in view points: an endpoint on the boundary; a pipeline's tile or wire when it's drawn in
+    /// full; a flow; else a pipeline's plate, else a host.
     public func hit(at point: CGPoint) -> ContinuumHit? {
+        if let id = endpoint(at: point) { return .endpoint(id) }
+        let under = plateHit(at: point)
+        if case .inside? = under { return under }
+        if let id = flow(at: point) { return .flow(id) }
+        return under
+    }
+
+    private func plateHit(at point: CGPoint) -> ContinuumHit? {
         let world = camera.worldPoint(point, in: viewSize)
         let look = theme.continuum
         for host in continuum.hosts.reversed() {
@@ -769,16 +857,24 @@ public final class ContinuumStage {
         case .host(let name)?:
             show(MeepAddress(host: name))
             onFocus?(MeepAddress(host: name))
+        case .flow(let id)?:
+            showFlow(id)
+        case .endpoint(let id)?:
+            showEndpoint(id)
         case nil:
             show(nil)
             onFocus?(nil)
         }
     }
 
-    /// Hosts, pipelines, and the tiles and wires of those drawn in full, for VoiceOver.
+    /// Hosts, pipelines, and the tiles and wires of those drawn in full, and the boundary's endpoints, for VoiceOver.
     public func accessibilityItems() -> [StageAccessibilityItem] {
         var items: [StageAccessibilityItem] = []
         let screen = CGRect(origin: .zero, size: viewSize)
+        for (id, frame) in endpointsOnScreen where frame.intersects(screen) {
+            guard let endpoint = flowMap.boundary.first(where: { $0.id == id }) else { continue }
+            items.append(StageAccessibilityItem(hit: .tile("endpoint:\(id)"), label: "Outside: \(endpoint.name), \(Self.ratesLine(endpoint))", frame: frame))
+        }
         for host in continuum.hosts {
             guard let frame = hostPlaces[host.name]?.at(time) else { continue }
             let shown = camera.viewRect(frame, in: viewSize)

@@ -20,12 +20,15 @@ public struct Theme: Sendable, Equatable, Codable {
     public var labels: Labels
     /// Hosts and pipelines as the Continuum draws them, zoomed out.
     public var continuum: ContinuumLook
+    /// Flows between pipelines and hosts, and the boundary's endpoints.
+    public var flows: FlowLook
 
     public init(
         name: String, canvas: Canvas, starfield: Starfield, roles: Roles, colors: Colors, tiles: Tiles, wires: Wires,
-        particles: Particles, labels: Labels, continuum: ContinuumLook = .standard
+        particles: Particles, labels: Labels, continuum: ContinuumLook = .standard, flows: FlowLook = .standard
     ) {
         self.continuum = continuum
+        self.flows = flows
         self.name = name
         self.canvas = canvas
         self.starfield = starfield
@@ -304,6 +307,51 @@ public struct ContinuumLook: Sendable, Equatable, Codable {
     public func heat(_ load: Double) -> StageColor {
         let t = Float(min(max(load, 0), 1))
         return t < 0.5 ? cool.mixed(with: warm, by: t * 2) : warm.mixed(with: hot, by: (t - 0.5) * 2)
+    }
+}
+
+/// How flows between pipelines and the boundary look (design, section 3): flows seen solid and declared ones dashed,
+/// endpoints outside Meep round the edge in the colours of the roles that meet them, sizes in points so they read at
+/// every zoom.
+public struct FlowLook: Sendable, Equatable, Codable {
+    /// A flow that's been seen, and one only declared.
+    public var observed: StageColor
+    public var declared: StageColor
+    /// Traffic into the Continuum, from clients to Listens, and out of it, from Fetches and Sends.
+    public var inbound: StageColor
+    public var outbound: StageColor
+    /// Another Meep Synesthesia doesn't follow, and everything past modules' limits.
+    public var otherMeep: StageColor
+    public var pastLimit: StageColor
+    /// The Continuum's edge, drawn round the mesh.
+    public var region: StageColor
+    /// Widths in pixels at 1×: the least, and the most a busy flow grows to.
+    public var width: Float
+    public var widest: Float
+    /// A declared flow's dashes, in pixels at 1×, and how much of each is drawn.
+    public var dashLength: Float
+    public var dashDuty: Float
+    /// An endpoint's marker on screen, in points.
+    public var endpointSize: CGFloat
+    /// How far beyond the mesh the boundary's endpoints sit, in world units.
+    public var ringMargin: CGFloat
+    /// Fonts in points, keeping their size on screen.
+    public var labelFont: StageFont
+    public var detailFont: StageFont
+    public var groupFont: StageFont
+
+    public static let standard = FlowLook(
+        observed: StageColor(hex: 0x9FE7FF), declared: StageColor(hex: 0x8C93A3), inbound: StageColor(hex: 0x7C8CFF),
+        outbound: StageColor(hex: 0x6CFF8E), otherMeep: StageColor(hex: 0xFFC23D), pastLimit: StageColor(hex: 0x8C93A3),
+        region: StageColor(hex: 0x5B6AA0), width: 1.6, widest: 6, dashLength: 7, dashDuty: 0.55, endpointSize: 18, ringMargin: 900,
+        labelFont: StageFont(size: 13, weight: .semibold), detailFont: StageFont(size: 11, weight: .medium, monospacedDigits: true),
+        groupFont: StageFont(size: 12, weight: .medium)
+    )
+
+    /// A flow's width for `rate` messages a second: wider with the log of the rate, so ten times the traffic is a
+    /// step wider without swamping the rest.
+    public func width(for rate: Double) -> Float {
+        min(widest, width + 1.1 * Float(log10(1 + max(rate, 0))))
     }
 }
 
