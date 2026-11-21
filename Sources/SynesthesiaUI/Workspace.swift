@@ -27,6 +27,8 @@ public final class Workspace {
     @ObservationIgnored private var followingCanvas = false
     /// Whether a pipeline's Meeplang shows beside its canvas.
     public var showsText = false
+    /// Whether the Claude sidebar shows beside the canvas.
+    public var showsClaude = false
     /// The language server the text uses, if the platform can start one.
     public let language: LanguageService?
     /// Each pipeline's open text, by the pipeline's id. Text with changes not saved stays open while it's hidden.

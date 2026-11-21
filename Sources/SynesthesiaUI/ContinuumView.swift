@@ -28,6 +28,7 @@ public struct ContinuumView: View {
     @Bindable var workspace: Workspace
     @State private var addingHost = false
     @Environment(\.hostManaging) private var hostManaging
+    @Environment(\.claude) private var claude
     private var continuum: Continuum { workspace.continuum }
 
     public init(workspace: Workspace) {
@@ -68,6 +69,28 @@ public struct ContinuumView: View {
             }
         } detail: {
             ContinuumDetail(workspace: workspace)
+                .inspector(isPresented: claude == nil ? .constant(false) : $workspace.showsClaude) {
+                    if let claude {
+                        ClaudeSidebar(chat: claude)
+                            .inspectorColumnWidth(min: 300, ideal: 380, max: 680)
+                    }
+                }
+                .toolbar {
+                    if claude != nil {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button {
+                                workspace.showsClaude.toggle()
+                            } label: {
+                                Label("Claude", systemImage: "sparkles")
+                            }
+                            .help(workspace.showsClaude ? "Hide Claude" : "Ask Claude about what's on screen")
+                        }
+                    }
+                }
+                // A tool waiting for the person is shown, even if the sidebar was closed while Claude worked.
+                .onChange(of: claude?.approval?.id) { _, waiting in
+                    if waiting != nil { workspace.showsClaude = true }
+                }
         }
         .sheet(isPresented: $addingHost) {
             if let hostManaging { AddHostForm(manager: hostManaging) }

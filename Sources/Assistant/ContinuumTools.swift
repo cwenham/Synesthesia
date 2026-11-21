@@ -454,7 +454,8 @@ public enum ContinuumTools {
                     "limit": ["type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "Stop after this many messages."],
                 ],
                 "required": ["address"],
-            ]
+            ],
+            asks: .sendsMessages
         ) { arguments in
             let (host, pipeline, module) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
             guard let module else { throw ToolError("Give a module's address, such as meep://local/orders/m3: a tap is on one module's output.") }
@@ -531,7 +532,8 @@ public enum ContinuumTools {
                 ],
                 "required": ["address"],
             ],
-            readOnly: false
+            readOnly: false,
+            asks: .change
         ) { arguments in
             let (host, pipeline, module) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
             guard let module else { throw ToolError("Give a module's address, such as meep://local/orders/m3.") }
@@ -581,7 +583,8 @@ public enum ContinuumTools {
                 ],
                 "required": ["address", "summary", "edits"],
             ],
-            readOnly: false
+            readOnly: false,
+            asks: .change
         ) { arguments in
             let (host, pipeline, _) = try resolve(arguments["address"], in: viewer, needsPipeline: true)
             guard let summary = arguments["summary"]?.string?.trimmingCharacters(in: .whitespaces), !summary.isEmpty else {
@@ -695,6 +698,9 @@ public enum ContinuumTools {
             var entry: [String: JSONValue] = [
                 "key": .string(link.key), "from": .string(link.from), "to": .string(link.to), "port": .string(link.port.rawValue),
             ]
+            // As the canvas names its ends, for telling a person which link this is.
+            let ends = [link.from, link.to].map { pipeline.module($0)?.label.nilIfEmpty ?? $0 }
+            entry["named"] = .string(ends.joined(separator: " → "))
             if link.input > 1 { entry["input"] = .number(link.input) }
             if !link.types.isEmpty { entry["types"] = .array(link.types.map { .string($0) }) }
             if link.isCounted {

@@ -11,10 +11,21 @@ public struct Tool: Sendable {
     public var inputSchema: JSONValue
     /// Whether it only looks. Tools that change anything are confirmed in the app (design, section 8: safety).
     public var readOnly: Bool
+    /// What the sidebar asks the person before it runs, if anything (design, section 8: safety).
+    public var asks: Asks?
     public var run: @MainActor @Sendable (JSONValue) async throws -> ToolResult
 
+    /// Why the person is asked before a tool runs in the sidebar.
+    public enum Asks: Sendable, Equatable {
+        /// It goes beyond observing: it offers a message to send in, or edits to make. The person still decides in the
+        /// app, as they do over MCP; this asks first whether Claude may offer it at all.
+        case change
+        /// What it returns is real message contents, which the sidebar sends to the Claude API.
+        case sendsMessages
+    }
+
     public init(
-        name: String, title: String, description: String, inputSchema: JSONValue, readOnly: Bool = true,
+        name: String, title: String, description: String, inputSchema: JSONValue, readOnly: Bool = true, asks: Asks? = nil,
         run: @escaping @MainActor @Sendable (JSONValue) async throws -> ToolResult
     ) {
         self.name = name
@@ -22,6 +33,7 @@ public struct Tool: Sendable {
         self.description = description
         self.inputSchema = inputSchema
         self.readOnly = readOnly
+        self.asks = asks
         self.run = run
     }
 
@@ -31,6 +43,12 @@ public struct Tool: Sendable {
             "name": .string(name), "title": .string(title), "description": .string(description), "inputSchema": inputSchema,
             "annotations": ["title": .string(title), "readOnlyHint": .bool(readOnly), "openWorldHint": false],
         ]
+    }
+
+    /// Its definition as the Messages API takes it, from the same name, description and schema as MCP's. Its input
+    /// streams in as it's written (`eager_input_streaming`), so the sidebar checks it against the schema before it runs.
+    public var apiDefinition: JSONValue {
+        ["name": .string(name), "description": .string(description), "input_schema": inputSchema, "eager_input_streaming": true]
     }
 }
 

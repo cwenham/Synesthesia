@@ -51,10 +51,11 @@ let package = Package(
         // Optimised even in debug builds: drawing each glyph's distance field takes seconds unoptimised, on the main
         // thread, which stalls the canvas the first time it draws and every test running beside the renderer's.
         .target(name: "MetalStage", dependencies: ["Stage"], swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
-        // The tools Claude uses, written once (design, section 8), and the MCP server that offers them.
+        // The tools Claude uses, written once (design, section 8), the MCP server that offers them, and the Claude API
+        // client and tool loop the sidebar uses.
         .target(name: "Assistant", dependencies: ["ContinuumKit", "Stage", "FlowKit", "MeepClient", "Transport", "CodeEditing", "LanguageClient"]),
-        // SwiftUI shared by the Mac and iPad apps.
-        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage", "CodeEditing", "LanguageClient", "MeepClient", "FlowKit", "Transport"]),
+        // SwiftUI shared by the Mac and iPad apps, the Claude sidebar among it.
+        .target(name: "SynesthesiaUI", dependencies: ["ContinuumKit", "Stage", "CodeEditing", "LanguageClient", "MeepClient", "FlowKit", "Transport", "Assistant"]),
         // The Mac app: its windows, menus and the hosts it starts with.
         .executableTarget(name: "SynesthesiaMac", dependencies: ["SynesthesiaUI", "ContinuumKit", "MeepClient", "Simulation", "Stage", "MetalStage", "Assistant", "Transport", "CodeEditing", "LanguageClient"]),
         // synesthesia-mcp, in the app bundle: joins an MCP client's standard input and output to the app's socket.
@@ -69,7 +70,7 @@ let package = Package(
         .testTarget(name: "LayoutKitTests", dependencies: ["LayoutKit"]),
         .testTarget(name: "StageTests", dependencies: ["Stage", "ContinuumKit", "Simulation", "MeepClient"]),
         .testTarget(name: "MetalStageTests", dependencies: ["MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
-        .testTarget(name: "AssistantTests", dependencies: ["Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient", "CodeEditing", "LanguageClient"]),
-        .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient", "LanguageClient", "CodeEditing"]),
+        .testTarget(name: "AssistantTests", dependencies: ["Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient", "CodeEditing", "LanguageClient"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient", "LanguageClient", "CodeEditing", "Assistant"]),
     ]
 )

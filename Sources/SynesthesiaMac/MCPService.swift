@@ -139,9 +139,9 @@ final class MCPService {
     /// Why it isn't serving, if it isn't.
     private(set) var problem: String?
 
-    func start(viewer: AppViewer) {
+    /// Serves the tools in `registry`: the same ones the Claude sidebar uses.
+    func start(registry: ToolRegistry) {
         guard server == nil else { return }
-        let registry = ContinuumTools.registry(for: viewer)
         let info = MCPSession.ServerInfo(
             name: "synesthesia", title: "Synesthesia", version: Bundle.main.shortVersion, instructions: ContinuumTools.instructions
         )

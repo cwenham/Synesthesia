@@ -1,4 +1,5 @@
 import AppKit
+import Assistant
 import CodeEditing
 import ContinuumKit
 import LanguageClient
@@ -16,6 +17,8 @@ struct SynesthesiaApp: App {
     @State private var model = AppModel.shared
     @AppStorage("showsSimulatedHost") private var showsSimulatedHost = true
     @AppStorage("showsText") private var showsText = false
+    @AppStorage("showsClaude") private var showsClaude = false
+    @AppStorage(SettingsTab.key) private var settingsTab = SettingsTab.canvas.rawValue
     @AppStorage(CanvasLook.starfieldKey) private var showsStarfield = true
 
     init() {
@@ -26,6 +29,7 @@ struct SynesthesiaApp: App {
         AppModel.shared.start()
         AppModel.shared.showSimulatedHost(UserDefaults.standard.object(forKey: "showsSimulatedHost") as? Bool ?? true)
         AppModel.shared.workspace.showsText = UserDefaults.standard.bool(forKey: "showsText")
+        AppModel.shared.workspace.showsClaude = UserDefaults.standard.bool(forKey: "showsClaude")
         // The canvas's look, with the person's settings, and still stars when the system asks for less motion.
         CanvasLook.reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         CanvasLook.start()
@@ -43,9 +47,11 @@ struct SynesthesiaApp: App {
                 .environment(\.canvasSurface, MacCanvas.provider)
                 .environment(\.codeTextSurface, MacCodeText.provider)
                 .environment(\.hostManaging, model)
+                .environment(\.claude, model.claude)
                 .frame(minWidth: 760, minHeight: 520)
                 .onChange(of: showsSimulatedHost) { _, shows in model.showSimulatedHost(shows) }
                 .onChange(of: model.workspace.showsText) { _, shows in showsText = shows }
+                .onChange(of: model.workspace.showsClaude) { _, shows in showsClaude = shows }
         }
         .defaultLaunchBehavior(.presented)
         .commands {
@@ -53,6 +59,8 @@ struct SynesthesiaApp: App {
                 Toggle("Show Simulated Host", isOn: $showsSimulatedHost)
                 Toggle("Show Meeplang", isOn: Binding(get: { model.workspace.showsText }, set: { model.workspace.showsText = $0 }))
                     .keyboardShortcut("t", modifiers: [.command, .option])
+                Toggle("Show Claude", isOn: Binding(get: { model.workspace.showsClaude }, set: { model.workspace.showsClaude = $0 }))
+                    .keyboardShortcut("c", modifiers: [.command, .option])
                 Toggle("Show Starfield", isOn: $showsStarfield)
                 Divider()
                 ZoomCommands()
@@ -70,7 +78,15 @@ struct SynesthesiaApp: App {
         }
 
         Settings {
-            CanvasSettingsView()
+            TabView(selection: $settingsTab) {
+                CanvasSettingsView()
+                    .tabItem { Label("Canvas", systemImage: "sparkle") }
+                    .tag(SettingsTab.canvas.rawValue)
+                ClaudeSettingsView(chat: model.claude)
+                    .tabItem { Label("Claude", systemImage: "sparkles") }
+                    .tag(SettingsTab.claude.rawValue)
+            }
+            .frame(width: 480)
         }
     }
 }
@@ -152,6 +168,10 @@ final class AppModel: HostManaging {
 
     let continuum: Continuum
     let workspace: Workspace
+    /// The Claude sidebar's conversation, with the same tools the MCP server offers.
+    let claude: ClaudeChat
+    @ObservationIgnored private let viewer: AppViewer
+    @ObservationIgnored private let tools: ToolRegistry
     @ObservationIgnored private var sessions: [String: HostSession] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private let mcp = MCPService()
@@ -174,6 +194,14 @@ final class AppModel: HostManaging {
             return try await MeepLanguageServer.start(over: process.stream)
         }
         workspace = Workspace(continuum: continuum, language: language)
+        let viewer = AppViewer(workspace: workspace)
+        self.viewer = viewer
+        // One set of tools, two ways in (design, section 8): MCP and the sidebar.
+        tools = ContinuumTools.registry(for: viewer)
+        claude = ClaudeChat(registry: tools, key: ClaudeKey(store: KeychainStore())) { SidebarPrompt.context(viewer) }
+        if let saved = UserDefaults.standard.string(forKey: ClaudeSettingsView.effortKey), let effort = Effort(rawValue: saved) {
+            claude.effort = effort
+        }
     }
 
     /// Starts following this Mac's daemon, at `$MEEP_HOME/daemon/meep.sock` or `~/.meep/daemon/meep.sock`, and serving
@@ -181,7 +209,7 @@ final class AppModel: HostManaging {
     func start() {
         guard !started else { return }
         started = true
-        mcp.start(viewer: AppViewer(workspace: workspace))
+        mcp.start(registry: tools)
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [mcp, languageProcess] _ in
             MainActor.assumeIsolated { mcp.stop() }
             languageProcess.replace(with: nil)
