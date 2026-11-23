@@ -210,6 +210,9 @@ public final class MeepPipeline: Identifiable {
     public var shownAs: SubscriptionPlanner.Detail = .listed
     /// How much of its flows and boundary the canvas draws, for the planner to ask for its places only then.
     public var flowsShownAs: SubscriptionPlanner.FlowDetail = .none
+    /// Modules whose handling times are shown somewhere other than the canvas, such as the code level's gutter, by who
+    /// asked: the planner asks for their times, however little of the pipeline the canvas shows.
+    @ObservationIgnored private var timingAsks: [String: Set<String>] = [:]
     /// Its totals: each count added up over its modules by the daemon, with `sourced` and its bytes.
     public internal(set) var totals = CountSet()
     /// Names for the addresses of clients outside Meep that its Listens have heard from, by reverse DNS.
@@ -296,6 +299,20 @@ public final class MeepPipeline: Identifiable {
     /// the canvas draws.
     public var flowDetail: SubscriptionPlanner.FlowDetail {
         watchers > 0 ? max(flowsShownAs, .close) : flowsShownAs
+    }
+
+    /// The modules whose handling times have been asked for, whatever the canvas shows.
+    public var timingWanted: Set<String> {
+        timingAsks.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+    }
+
+    /// Asks for these modules' handling times until ``endTimingAsk(by:)``, replacing what `asker` asked before.
+    public func askForTiming(of keys: Set<String>, by asker: String) {
+        if keys.isEmpty { timingAsks.removeValue(forKey: asker) } else { timingAsks[asker] = keys }
+    }
+
+    public func endTimingAsk(by asker: String) {
+        timingAsks.removeValue(forKey: asker)
     }
 
     /// Whether its graph is older than its counts, so it should be fetched again.
@@ -445,7 +462,11 @@ public final class MeepModule: Identifiable {
     public internal(set) var verb = ""
     public internal(set) var name: String?
     public internal(set) var role: VerbRole?
+    /// The inflections its parameters fit, as the loader found: usually one, such as `HTTP` for a Fetch of an
+    /// `https://` address.
     public internal(set) var inflections: [String] = []
+    /// The plugin its verb comes from, by the name its pipeline gives it, or nil for one of Meep's own.
+    public internal(set) var plugin: String?
     public internal(set) var counts = ModuleStats.zero
     public internal(set) var rates = RateSet()
     /// Microseconds spent handling messages since the pipeline started.
@@ -577,6 +598,7 @@ public final class MeepModule: Identifiable {
         name = graph.name
         role = graph.verbRole
         inflections = graph.inflections
+        plugin = graph.plugin
     }
 }
 

@@ -4,11 +4,13 @@ import Foundation
 import MeepClient
 import Simulation
 import Testing
+import TestSupport
 @testable import Stage
 
 /// Flows and the boundary on the Continuum's canvas (design, sections 2, 3 and 7): drawn between districts and tiles,
 /// between hosts as nodes, the mesh laid out by forces with eased moves, and endpoints outside Meep round its edge.
 @MainActor
+@Suite(.simulatedHosts)
 struct ContinuumFlowsTests {
     let size = CGSize(width: 1200, height: 800)
     private let feederID = SimulatedHost.id(for: "feeder")

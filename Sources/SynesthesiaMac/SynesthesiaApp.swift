@@ -46,6 +46,8 @@ struct SynesthesiaApp: App {
             ContinuumView(workspace: model.workspace)
                 .environment(\.canvasSurface, MacCanvas.provider)
                 .environment(\.codeTextSurface, MacCodeText.provider)
+                .environment(\.sourceTextSurface, MacSourceText.provider)
+                .environment(\.codeEditors, MacEditors.provider)
                 .environment(\.hostManaging, model)
                 .environment(\.claude, model.claude)
                 .frame(minWidth: 760, minHeight: 520)
@@ -82,6 +84,9 @@ struct SynesthesiaApp: App {
                 CanvasSettingsView()
                     .tabItem { Label("Canvas", systemImage: "sparkle") }
                     .tag(SettingsTab.canvas.rawValue)
+                CodeSettingsView(editors: MacEditors.provider)
+                    .tabItem { Label("Code", systemImage: "curlybraces") }
+                    .tag(SettingsTab.code.rawValue)
                 ClaudeSettingsView(chat: model.claude)
                     .tabItem { Label("Claude", systemImage: "sparkles") }
                     .tag(SettingsTab.claude.rawValue)

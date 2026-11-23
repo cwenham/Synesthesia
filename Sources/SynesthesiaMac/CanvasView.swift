@@ -1,4 +1,5 @@
 import AppKit
+import CodeEditing
 import MetalKit
 import MetalStage
 import Stage
@@ -191,7 +192,7 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
         }
     }
 
-    /// A tile's menu: probe it, send it a message, show it in the text, or delete it. A wire's: probe it.
+    /// A tile's menu: probe it, send it a message, show it in the text or its C#, or delete it. A wire's: probe it.
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let stage = canvas.pipelineStage(at: location(of: event)) else { return nil }
         let hit = stage.hit(at: location(of: event))
@@ -210,6 +211,11 @@ final class CanvasMTKView: MTKView, MTKViewDelegate, NSMenuItemValidation {
             menu.addItem(.separator())
         }
         menu.addItem(ClosureMenuItem("Show in Text") { [stage] in stage.requestText(at: key) })
+        if let module = stage.module(key), !module.verb.isEmpty {
+            menu.addItem(ClosureMenuItem("Show C# of \(CodeSubject.name(verb: module.verb, inflections: module.inflections))") { [stage] in
+                stage.requestCode(at: key)
+            })
+        }
         if let editing = stage.editing {
             menu.addItem(.separator())
             let label = keys.count == 1 ? "Delete" : "Delete \(keys.count) Modules"

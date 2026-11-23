@@ -5,6 +5,7 @@ import Foundation
 import MeepClient
 import Simulation
 import Testing
+import TestSupport
 @testable import Stage
 
 /// A simulated host's pipeline, filled in by a session, with the session still running so its counts go on rising.
@@ -26,6 +27,7 @@ func simulated(
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct PipelineStageTests {
     let size = CGSize(width: 1200, height: 700)
 
@@ -306,6 +308,7 @@ struct TextTests {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct ProposalTests {
     let size = CGSize(width: 1100, height: 560)
 
@@ -343,6 +346,7 @@ struct ProposalTests {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct ProbeDrawingTests {
     let size = CGSize(width: 1100, height: 560)
 
@@ -396,6 +400,7 @@ func waitFor(_ condition: @MainActor () async -> Bool) async throws {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct TileDragTests {
     let size = CGSize(width: 1100, height: 560)
 
@@ -446,6 +451,7 @@ enum BranchDescendants {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct ThemeTests {
     let size = CGSize(width: 1200, height: 700)
 

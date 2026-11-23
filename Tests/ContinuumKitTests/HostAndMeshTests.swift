@@ -3,12 +3,14 @@ import Foundation
 import MeepClient
 import Simulation
 import Testing
+import TestSupport
 import Transport
 @testable import ContinuumKit
 
 /// Following hosts with one subscription each (design, section 4), within their budgets, with the roll-ups the host
 /// and mesh levels draw.
 @MainActor
+@Suite(.simulatedHosts)
 struct SubscriptionSessionTests {
     private func follow(_ link: SimulatedHost, budget: Double? = nil, settings: HostSession.Settings = .init(replanEvery: .milliseconds(50), rateScale: 0.1))
         -> (MeepHost, HostSession) {

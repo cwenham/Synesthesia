@@ -4,6 +4,7 @@ import LanguageClient
 import MeepClient
 import Simulation
 import Testing
+import TestSupport
 import Transport
 @testable import CodeEditing
 
@@ -272,7 +273,7 @@ struct MeeplangDocumentTests {
         #expect(document.status == .saved)
     }
 
-    @Test func theFileChangingElsewhereIsTakenUnlessThereAreChangesHere() async throws {
+    @Test(.simulatedHosts) func theFileChangingElsewhereIsTakenUnlessThereAreChangesHere() async throws {
         let (continuum, host, session, simulated, path) = try await runningPipeline(text: "Interval 1s\nWriteLine x")
         defer { session.stop() }
         let (service, _) = try await service()
@@ -312,7 +313,7 @@ struct MeeplangDocumentTests {
         document.close()
     }
 
-    @Test func aRunningPipelinesKeysBecomeTheDocumentsAndRenamesAreSaid() async throws {
+    @Test(.simulatedHosts) func aRunningPipelinesKeysBecomeTheDocumentsAndRenamesAreSaid() async throws {
         let (_, host, session, simulated, path) = try await runningPipeline(text: "Interval 1s\nWriteLine x")
         defer { session.stop() }
         let (service, fake) = try await service()
@@ -343,7 +344,7 @@ struct MeeplangDocumentTests {
         #expect(document.modulesByLine[1] == ["m4"])
     }
 
-    @Test func savingARunningPipelineWaitsForItsReload() async throws {
+    @Test(.simulatedHosts) func savingARunningPipelineWaitsForItsReload() async throws {
         let (_, host, session, simulated, path) = try await runningPipeline(text: "Interval 1s")
         defer { session.stop() }
         let (service, fake) = try await service()
@@ -445,7 +446,7 @@ struct MeeplangDocumentTests {
         #expect(document.text == "Interval 1s\nWriteLine x\n    WriteLine y")
     }
 
-    @Test func aDaemonThatSaysItIsntWatchingIsBelievedAtOnce() async throws {
+    @Test(.simulatedHosts) func aDaemonThatSaysItIsntWatchingIsBelievedAtOnce() async throws {
         var notWatched = spec(text: "Interval 1s", path: try temporaryFile("Interval 1s"))
         notWatched.watching = false
         let (_, host, session, _, _) = try await runningPipeline(text: "Interval 1s", spec: notWatched)

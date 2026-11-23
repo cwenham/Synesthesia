@@ -262,6 +262,9 @@ private struct PipelineFocus: View {
             .onChange(of: stage.textRequest) { _, request in
                 if let request { workspace?.showText(of: pipeline, at: request.key) }
             }
+            .onChange(of: stage.codeRequest) { _, request in
+                if let key = request?.key { workspace?.showCode(of: pipeline, host: host, at: key) }
+            }
             .onChange(of: workspace?.probes(for: pipeline).map(\.id) ?? []) { _, _ in
                 stage.probes = workspace?.probes(for: pipeline) ?? []
                 if !stage.probes.isEmpty, stage.probes.count > (previousProbes ?? 0) { editor.showsProbes = true }
@@ -448,7 +451,7 @@ struct PipelineHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Breadcrumb(parts: ["Continuum", host?.title ?? pipeline.host, pipeline.name])
+            Breadcrumb(parts: ["Continuum", host?.title ?? pipeline.host, pipeline.name] + codeParts)
             if let host, !host.isReachable {
                 Label("\(host.title) can't be reached, so these are the counts from when it last could. \(host.statusText)",
                       systemImage: "wifi.exclamationmark")
@@ -481,6 +484,15 @@ struct PipelineHeader: View {
                 }
             }
         }
+    }
+}
+
+extension PipelineHeader {
+    /// With the C# showing, where it is below the pipeline: Fetch › Fetch.HTTP (design, section 2).
+    var codeParts: [String] {
+        guard let code = workspace?.code, code.pipelineID == pipeline.id else { return [] }
+        let module = code.subject.key == nil ? [] : [code.subject.label]
+        return module + [code.shownCode?.name ?? code.subject.verb]
     }
 }
 

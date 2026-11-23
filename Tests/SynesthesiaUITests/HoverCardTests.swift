@@ -6,11 +6,13 @@ import Simulation
 import Stage
 import SwiftUI
 import Testing
+import TestSupport
 import UniformTypeIdentifiers
 @testable import SynesthesiaUI
 
 /// Renders the hover cards off screen. With `SYNESTHESIA_SNAPSHOTS` set to a folder, each is saved there as a PNG.
 @MainActor
+@Suite(.simulatedHosts)
 struct HoverCardTests {
     @Test func aModulesCardShowsItsCountsAndWhereItsWritten() async throws {
         let (stage, session) = try await stage(for: "orders")

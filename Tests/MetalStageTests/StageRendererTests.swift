@@ -7,13 +7,14 @@ import MeepClient
 import Simulation
 import Stage
 import Testing
+import TestSupport
 import UniformTypeIdentifiers
 @testable import MetalStage
 
 /// Renders simulated pipelines off screen. With `SYNESTHESIA_SNAPSHOTS` set to a folder, each test also writes what
 /// it drew there as a PNG, to look at.
 @MainActor
-@Suite(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "needs a GPU"))
+@Suite(.simulatedHosts, .enabled(if: MTLCreateSystemDefaultDevice() != nil, "needs a GPU"))
 struct StageRendererTests {
     let size = CGSize(width: 1100, height: 560)
 
@@ -31,7 +32,8 @@ struct StageRendererTests {
         #expect(renderer.lastCounts.particles + renderer.lastCounts.streamed > 0, "particles are drawn")
         // The background is off-black, but for a few stars, and the tiles' outlines bright.
         let pixels = try #require(Pixels(image))
-        #expect(pixels.brightest > 0.7)
+        // Read off the main actor: millions of pixels, which the suites beside this one would otherwise wait for.
+        #expect(await Task.detached { pixels.brightest }.value > 0.7)
         let corner = (0..<40).flatMap { y in (0..<40).map { x in pixels.at(x: x, y: y).max()! } }
         #expect(corner.filter { $0 < 0.12 }.count > corner.count * 9 / 10)
     }
@@ -153,10 +155,26 @@ struct Pixels {
 
     /// How many pixels' brightest channel passes `test`.
     func count(where test: (Double) -> Bool) -> Int {
-        stride(from: 0, to: bytes.count, by: 4).filter { test(Double(max(bytes[$0], bytes[$0 + 1], bytes[$0 + 2])) / 255) }.count
+        var passed = 0
+        forEachBrightest { if test(Double($0) / 255) { passed += 1 } }
+        return passed
     }
 
-        var brightest: Double {
-        stride(from: 0, to: bytes.count, by: 4).map { Double(max(bytes[$0], bytes[$0 + 1], bytes[$0 + 2])) / 255 }.max() ?? 0
+    var brightest: Double {
+        var most: UInt8 = 0
+        forEachBrightest { most = max(most, $0) }
+        return Double(most) / 255
+    }
+
+    /// Each pixel's brightest channel, read straight from the bytes: these images have millions of pixels, and the
+    /// tests run in a debug build on the main actor, which other suites are waiting for.
+    private func forEachBrightest(_ body: (UInt8) -> Void) {
+        bytes.withUnsafeBufferPointer { buffer in
+            var index = 0
+            while index < buffer.count {
+                body(max(buffer[index], buffer[index + 1], buffer[index + 2]))
+                index += 4
+            }
+        }
     }
 }

@@ -4,6 +4,7 @@ import Foundation
 import ImageIO
 import MeepClient
 import Testing
+import TestSupport
 import UniformTypeIdentifiers
 @testable import Assistant
 
@@ -139,7 +140,8 @@ struct ClaudeChatTests {
                 Issue.record("Timed out")
                 throw CancellationError()
             }
-            try await Task.sleep(for: .milliseconds(2))
+            // Not much more often than this: every look takes a turn on the main actor the other suites share.
+            try await Task.sleep(for: .milliseconds(15))
         }
     }
 
@@ -243,7 +245,7 @@ struct ClaudeChatTests {
 
     // MARK: Tools
 
-    @Test func toolsRunOverSeveralTurnsAndTheTranscriptOnlyGrows() async throws {
+    @Test(.simulatedHosts) func toolsRunOverSeveralTurnsAndTheTranscriptOnlyGrows() async throws {
         let viewer = try await TestViewer(slowly: true)
         defer { viewer.stop() }
         let api = FakeAPI([.sse("loop-1.sse"), .sse("loop-2.sse", chunk: 11), .sse("loop-3.sse")])
@@ -382,7 +384,7 @@ struct ClaudeChatTests {
         #expect(chat.allowed.isEmpty && chat.messages.isEmpty && chat.entries.isEmpty)
     }
 
-    @Test func theRealChangingToolsAreAskedAbout() async throws {
+    @Test(.simulatedHosts) func theRealChangingToolsAreAskedAbout() async throws {
         let viewer = try await TestViewer(slowly: true)
         defer { viewer.stop() }
         let registry = ContinuumTools.registry(for: viewer)
@@ -597,7 +599,7 @@ struct ClaudeChatTests {
 
     // MARK: Context and links
 
-    @Test func eachQuestionCarriesTheFocusAndSelection() async throws {
+    @Test(.simulatedHosts) func eachQuestionCarriesTheFocusAndSelection() async throws {
         let viewer = try await TestViewer(slowly: true)
         defer { viewer.stop() }
         viewer.select(MeepAddress("meep://sim/orders"))
@@ -610,7 +612,7 @@ struct ClaudeChatTests {
         #expect(context.hasPrefix("[") && context.hasSuffix("]"))
     }
 
-    @Test func modulesAndLinksAreNamedAsTheCanvasNamesThem() async throws {
+    @Test(.simulatedHosts) func modulesAndLinksAreNamedAsTheCanvasNamesThem() async throws {
         let viewer = try await TestViewer(slowly: true)
         defer { viewer.stop() }
         let result = try #require(await ContinuumTools.registry(for: viewer).call("describe_pipeline", arguments: ["address": "meep://sim/orders"]))

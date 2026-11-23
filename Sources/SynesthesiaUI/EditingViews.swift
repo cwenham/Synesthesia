@@ -65,8 +65,15 @@ struct ModuleInspector: View {
                 .buttonStyle(.plain)
                 .help(expanded ? "Hide the module's parameters" : "Show the module's parameters")
                 Text(module.module).fontWeight(.semibold)
-                Text(entry.map { $0.inflection == $0.verb ? $0.verb : "\($0.verb).\($0.inflection)" } ?? module.verb)
+                Button { editor.showCode(of: key) } label: {
+                    HStack(spacing: 3) {
+                        Text(entry.map { $0.inflection == $0.verb ? $0.verb : "\($0.verb).\($0.inflection)" } ?? module.verb)
+                        Image(systemName: "curlybraces").imageScale(.small)
+                    }
                     .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Show its C#: the inflection it runs, and its verb's others, with their handling times. ⌘-clicking its verb in the text does too.")
                 Spacer()
                 Button { editor.probe(.module(key)) } label: { Image(systemName: "scope") }
                     .buttonStyle(.borderless)

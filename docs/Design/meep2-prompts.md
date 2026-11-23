@@ -25,6 +25,7 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 | 6 | `meep run` joining a daemon | 7, host and mesh |
 | 7 | Flow evidence and the boundary | 8, the boundary |
 | 8 | The iPad: LSP over the daemon, mutual TLS | 11, the iPad |
+| 9 | Each host's own verb catalogue and build | 10, the code level (after it) |
 
 **Done:**
 
@@ -38,6 +39,8 @@ Compared with section 10 of [architecture-round-1.md](architecture-round-1.md):
 **Not needed yet:** 6. Step 7 didn't need `meep run` to join a daemon, so it waits until it's wanted.
 
 **Found while building step 8, not needed by it:** a second daemon removes the running one's socket (below, after prompt 8).
+
+**Found while building step 10, not needed by it:** prompt 9. Step 10 shows a module on another host this Mac's copy of Meep's source, and says so, since nothing says what that host runs.
 
 Prompts 1 and 2 touch the same files (`Contracts.cs`, the daemon, the runtime's stats), so run them one after the other, not side by side.
 
@@ -201,6 +204,24 @@ Refreshed 20 November 2026 for Synesthesia's step 8, against Meep2's `main` at 0
 > - **Mutual TLS** on a TCP listener for the daemon, with client certificates mapped to the same capabilities as tokens (observe, inject, control), and a way to enrol a new device.
 >
 > If design questions come up, ask them in the numbered style of the design rounds. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
+
+## 9. Each host's own verb catalogue and build
+
+Written 21 November 2026 while building Synesthesia's step 10, against Meep2's `main` at ac0c7d2.
+
+> Synesthesia is the Swift app in `~/Projects/Synesthesia`. Its step 10, the code level (`docs/Design/step-10.md` there), shows the C# of the inflections behind a module's verb, with their handling times. Where the C# is comes from `meep lsp`'s `meep/verbs` (your report `docs/Design/Chat/lsp-graph.md`, "Source locations"): the file and line from the PDB, and a SourceLink `url` pinned to the commit the assembly was built from. Synesthesia reads the file when it's on this Mac, and otherwise the `url` over HTTPS.
+>
+> That works for modules on this Mac. For a module on another host, the only catalogue Synesthesia has is this Mac's `meep lsp`, which describes this Mac's build. The other host may run another build, or a plugin this Mac hasn't got, and `info`'s `version` is `1.0.0` on every build, so Synesthesia can't tell. It shows this Mac's copy and says it may differ.
+>
+> Add:
+>
+> - **The daemon's own verb catalogue,** the same entries as `meep/verbs` (`VerbCatalogue.Describe` already serves both), for the verbs that daemon has: its core build's and its plugins'. Over HTTP (`GET /verbs`, perhaps with `?pipeline=` for the plugins a pipeline loads) and over `/ws`, with `observe`. Each entry's `source.url` then points at the commit that host was built from. Say whether `source.file`, a path on that host, should be left out or kept.
+> - **The build:** `info` gives which build the daemon is, such as the assembly's informational version with its commit (`1.0.0+ac0c7d2`), so a client can tell two hosts running the same build apart from two that aren't.
+> - **Optional, if small:** the line of the method that handles each message for each inflection (the `AInflection` override), so the code level can mark it as well as the class.
+>
+> A plugin's C# without SourceLink stays out of reach on another host; say whether serving its source text from the daemon would be worth it, and with which capability, since source can be private. Don't build that.
+>
+> If design questions come up, ask them in the numbered style of the design rounds, continuing from 230. Write a report in `docs/Design/Chat/`. Don't commit; I'll review first.
 
 ## A second daemon removes the running one's socket
 

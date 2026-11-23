@@ -219,10 +219,18 @@ public struct VerbEntry: Codable, Sendable, Equatable {
         public var line: Int?
         /// The file on the web, pinned to the commit the assembly was built from.
         public var url: String?
+
+        public init(file: String?, line: Int?, url: String?) {
+            self.file = file
+            self.line = line
+            self.url = url
+        }
     }
 
     public var verb: String
     public var inflection: String
+    /// The plugin it comes from, by the name the pipeline gives it, or nil for one that came with Meep.
+    public var plugin: String?
     /// As the graph names roles: source, inlet, filter, outlet, step, router, tap.
     public var role: String
     /// source, passthrough or inflection.

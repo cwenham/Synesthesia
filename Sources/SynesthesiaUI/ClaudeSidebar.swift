@@ -166,7 +166,7 @@ public struct ClaudeSidebar: View {
 
 /// The tabs of the app's Settings window, so the sidebar can open it at Claude's.
 public enum SettingsTab: String {
-    case canvas, claude
+    case canvas, code, claude
     public static let key = "settingsTab"
 }
 

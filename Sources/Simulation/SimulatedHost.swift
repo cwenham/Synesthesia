@@ -410,6 +410,20 @@ public struct PipelineSpec: Sendable {
         /// For a Fetch or Send, the share of what it sends that's turned away (4xx).
         public var rejects: Double
 
+        /// The inflection a daemon would resolve it to, as Meep's own verbs have them: `HTTP` for a network verb with
+        /// an http address, `Reply` for a Send without one, and otherwise the verb's own.
+        public var inflection: String {
+            guard ["Fetch", "Send", "Listen"].contains(verb) else { return verb }
+            let scheme = address?.split(separator: ":").first?.lowercased()
+            switch scheme {
+            case "http"?, "https"?: return "HTTP"
+            case "tcp"?: return "TCP"
+            case "ws"?, "wss"?: return "WebSocket"
+            case "file"?: return "File"
+            default: return verb == "Send" ? "Reply" : verb
+            }
+        }
+
         public init(
             _ verb: String, _ role: VerbRole, name: String? = nil, from: [Int] = [], rate: Double = 0, passes: Double = 1,
             fails: Double = 0, drops: Double = 0, queue: Double = 0, errorsOnly: Bool = false, handlingTime: Double? = nil,
@@ -446,7 +460,7 @@ public struct PipelineSpec: Sendable {
         let graphModules = modules.enumerated().map { index, module in
             GraphModule(
                 key: "m\(index + 1)", number: index + 1, module: label(index), verb: module.verb, role: module.role,
-                inflections: [module.verb],
+                inflections: [module.inflection],
                 span: GraphSpan(file: path, startLine: index + 1, startColumn: 1, endLine: index + 1, endColumn: 20),
                 name: module.name, under: module.from.first.map { "m\($0 + 1)" }
             )

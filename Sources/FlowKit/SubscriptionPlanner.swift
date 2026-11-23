@@ -67,6 +67,9 @@ public struct SubscriptionPlanner: Sendable, Equatable {
         public var modules: Double?
         public var links: Double?
         public var timing: Double?
+        /// How many of its modules ``timing`` is for, when it isn't for all of them: those whose times are shown
+        /// somewhere other than the canvas, such as the code level's gutter.
+        public var timedModules: Int?
         public var bytes: Double?
         /// Its Listens' arrivals and its Fetches' and Sends' destinations.
         public var places: Double?
@@ -109,23 +112,29 @@ public struct SubscriptionPlanner: Sendable, Equatable {
     }
 
     /// The rates for pipelines shown at `details`, with their flows drawn at `flows`, the others being listed only,
-    /// within the budget. A pipeline's places are asked for only when it has modules that count them.
-    public func rates(for details: [String: Detail], flows: [String: FlowDetail] = [:], shapes: [String: Shape], others: Int) -> Rates {
+    /// within the budget. A pipeline's places are asked for only when it has modules that count them. `timing` names
+    /// pipelines some of whose modules' handling times are shown elsewhere, with how many: they come at the rate a
+    /// pipeline in focus has them, whatever its detail.
+    public func rates(
+        for details: [String: Detail], flows: [String: FlowDetail] = [:], timing: [String: Int] = [:], shapes: [String: Shape], others: Int
+    ) -> Rates {
         func scaled(_ seconds: Double, by factor: Double, limit: Double) -> Double {
             Self.nice(min(max(seconds * factor, seconds), limit))
         }
         func build(_ factor: Double) -> Rates {
             var pipelines: [String: PipelineRates] = [:]
-            for name in Set(details.keys).union(flows.keys) {
+            for name in Set(details.keys).union(flows.keys).union(timing.keys) {
                 let detail = details[name] ?? .listed
                 let places = (shapes[name]?.network ?? 0) > 0 ? flows[name]?.every : nil
-                guard detail > .listed || places != nil else { continue }
+                let timed = (timing[name] ?? 0) > 0 && detail < .full ? timing[name] : nil
+                guard detail > .listed || places != nil || timed != nil else { continue }
                 let usual = Self.usual(detail)
                 pipelines[name] = PipelineRates(
                     totals: scaled(usual.totals, by: factor, limit: 10),
                     modules: usual.modules.map { scaled($0, by: factor, limit: 10) },
                     links: usual.links.map { scaled($0, by: factor, limit: 10) },
-                    timing: usual.timing.map { scaled($0, by: factor, limit: 30) },
+                    timing: (usual.timing ?? timed.map { _ in Self.usual(.full).timing! }).map { scaled($0, by: factor, limit: 30) },
+                    timedModules: usual.timing == nil ? timed : nil,
                     bytes: usual.bytes.map { scaled($0, by: factor, limit: 30) },
                     places: places.map { scaled($0, by: factor, limit: 30) }
                 )
@@ -159,7 +168,7 @@ public struct SubscriptionPlanner: Sendable, Equatable {
             total += 160 * k / pipeline.totals
             if let modules = pipeline.modules { total += Double(shape.modules) * 42 * k / modules }
             if let links = pipeline.links { total += Double(shape.links) * 18 * k / links }
-            if let timing = pipeline.timing { total += Double(shape.modules) * 300 * k / timing }
+            if let timing = pipeline.timing { total += Double(pipeline.timedModules ?? shape.modules) * 300 * k / timing }
             if let bytes = pipeline.bytes { total += 2 * 30 * k / bytes }
             // A few places for each module that counts them, whose counts change, plus peers and names now and then.
             if let places = pipeline.places { total += Double(max(shape.network, 1)) * 3 * 70 * k / places }

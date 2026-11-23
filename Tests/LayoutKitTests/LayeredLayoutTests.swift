@@ -111,10 +111,12 @@ struct LayeredLayoutTests {
 
     @Test func aHundredModulesLayOutQuickly() {
         let big = randomGraph(nodes: 100, edges: 140, seed: 5)
-        let clock = ContinuousClock()
-        let took = clock.measure { _ = LayeredLayout().layout(big) }
-        // A debug build is several times slower than the app's release build, and slower again beside the other
-        // suites on a busy machine; this catches the 8 seconds layout once took, not a busy moment.
+        // The thread's own CPU time, not the clock's: on a busy Mac the clock also counts the time other processes
+        // had the CPU. A debug build is several times slower than the app's release build; this catches the 8 seconds
+        // layout once took.
+        let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+        _ = LayeredLayout().layout(big)
+        let took = Duration.nanoseconds(Int64(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start))
         #if DEBUG
         #expect(took < .milliseconds(2500), "took \(took)")
         #else

@@ -1,6 +1,7 @@
 import CodeEditing
 import ContinuumKit
 import Foundation
+import LanguageClient
 import MeepClient
 import Observation
 import Stage
@@ -18,6 +19,8 @@ public final class Workspace {
         didSet {
             canvas.selected = selection
             if !followingCanvas, selection != oldValue { canvas.show(selection) }
+            // The C# belongs to a module of the pipeline it was opened from.
+            if let code, let id = code.pipelineID, selection.map({ "\($0.host)/\($0.pipeline ?? "")" }) != id { closeCode() }
         }
     }
     /// The stage of the pipeline in focus, while one is.
@@ -37,6 +40,11 @@ public final class Workspace {
     public private(set) var textProblems: [String: String] = [:]
     /// The latest ask to scroll the text to a module, from the canvas or a tool.
     public private(set) var textFocus: TextFocus?
+    /// The C# of a module's inflections, shown in place of its pipeline's Meeplang while it's set (design, section 2,
+    /// level 1).
+    public private(set) var code: CodeLevel?
+    /// Where the code level reads C# from: files on this Mac, or SourceLink addresses over HTTPS, kept in a cache.
+    public let sources: SourceLibrary
 
     /// A module or line to scroll the text to, with a number that's new each time.
     public struct TextFocus: Equatable, Sendable {
@@ -78,9 +86,10 @@ public final class Workspace {
     @ObservationIgnored private var injectionWaiting: (id: Int, continuation: CheckedContinuation<InjectionOutcome, Never>)?
     @ObservationIgnored private var loadedProbes: Set<String> = []
 
-    public init(continuum: Continuum, language: LanguageService? = nil) {
+    public init(continuum: Continuum, language: LanguageService? = nil, sources: SourceLibrary = SourceLibrary()) {
         self.continuum = continuum
         self.language = language
+        self.sources = sources
         canvas = ContinuumStage(continuum: continuum)
         canvas.onFocus = { [weak self] address in self?.follow(address) }
         canvas.onSelect = { [weak self] address in self?.follow(address) }
@@ -151,6 +160,7 @@ public final class Workspace {
 
     /// Shows the text beside the canvas, scrolled to a module.
     public func showText(of pipeline: MeepPipeline, at key: String?) {
+        closeCode()
         showsText = true
         guard let key else { return }
         focuses += 1
@@ -159,9 +169,51 @@ public final class Workspace {
 
     /// Shows the text beside the canvas, scrolled to a line, from 0.
     public func showText(of pipeline: MeepPipeline, atLine line: Int) {
+        closeCode()
         showsText = true
         focuses += 1
         textFocus = TextFocus(id: focuses, pipeline: pipeline.id, key: nil, line: line)
+    }
+
+    // MARK: Code
+
+    /// Shows the C# of a module's inflections in place of its pipeline's Meeplang, the one it resolves to first, or
+    /// `inflection` if it's named. Returns the code level, which reads the C# as it shows; nil when the module isn't
+    /// known.
+    @discardableResult
+    public func showCode(of pipeline: MeepPipeline, host: MeepHost?, at key: String, inflection: String? = nil) -> CodeLevel? {
+        guard var subject = CodeSubject.module(key, in: pipeline, host: host, document: documents[pipeline.id]) else { return nil }
+        subject.inflection = inflection
+        if let code, code.subject == subject {
+            showsText = true
+            if let inflection, let match = code.inflections.first(where: { $0.entry.inflection == inflection }) { code.show(match.name) }
+            return code
+        }
+        return show(CodeLevel(subject: subject, continuum: continuum), uri: documents[pipeline.id]?.uri ?? MeepLanguageServer.uri(forPath: pipeline.path))
+    }
+
+    /// Shows the C# of a verb's inflections, not a module's, as when a tool names a verb.
+    @discardableResult
+    public func showCode(ofVerb verb: String, inflection: String?, beside pipeline: MeepPipeline) -> CodeLevel {
+        let subject = CodeSubject(pipeline: pipeline.address, label: verb, verb: verb, inflection: inflection)
+        return show(CodeLevel(subject: subject, continuum: continuum), uri: nil)
+    }
+
+    private func show(_ level: CodeLevel, uri: String?) -> CodeLevel {
+        code?.stopAskingForTimes()
+        code = level
+        showsText = true
+        if let language {
+            let sources = sources
+            Task { await level.load(using: language, uri: uri, library: sources) }
+        }
+        return level
+    }
+
+    /// Goes back from the C# to the Meeplang.
+    public func closeCode() {
+        code?.stopAskingForTimes()
+        code = nil
     }
 
     // MARK: Probes

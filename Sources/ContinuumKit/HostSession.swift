@@ -211,6 +211,7 @@ public final class HostSession {
         var details: [String: SubscriptionPlanner.Detail] = [:]
         var flows: [String: SubscriptionPlanner.FlowDetail] = [:]
         var shapes: [String: SubscriptionPlanner.Shape] = [:]
+        var timing: [String: Int] = [:]
         var network: [String: Set<String>] = [:]
         for listen in host.listens { network[listen.pipeline, default: []].insert(listen.module) }
         for send in host.sends { network[send.pipeline, default: []].insert(send.module) }
@@ -218,12 +219,14 @@ public final class HostSession {
             let detail = max(pipeline.detail, settings.leastDetail)
             let flow = max(pipeline.flowDetail, settings.leastFlowDetail)
             let counting = network[pipeline.name]?.count ?? 0
-            guard detail > .listed || flow > .none && counting > 0 else { continue }
+            let timed = pipeline.timingWanted.count
+            guard detail > .listed || flow > .none && counting > 0 || timed > 0 else { continue }
             if detail > .listed { details[pipeline.name] = detail }
             if flow > .none { flows[pipeline.name] = flow }
+            if timed > 0 { timing[pipeline.name] = timed }
             shapes[pipeline.name] = SubscriptionPlanner.Shape(modules: pipeline.modules.count, links: pipeline.links.count, network: counting)
         }
-        let rates = planner.rates(for: details, flows: flows, shapes: shapes, others: max(0, host.pipelines.count - shapes.count))
+        let rates = planner.rates(for: details, flows: flows, timing: timing, shapes: shapes, others: max(0, host.pipelines.count - shapes.count))
         self.rates = rates
         host.traffic.flows = flows.values.reduce(into: [:]) { $0[$1, default: 0] += 1 }
         host.traffic.slowdown = rates.slowdown
@@ -235,11 +238,17 @@ public final class HostSession {
         func duration(_ seconds: Double) -> Duration { .milliseconds(max(50, Int((seconds * settings.rateScale * 1000).rounded()))) }
         var pipelines: [String: PipelinePlan] = ["*": PipelinePlan(totals: duration(rates.others))]
         for (name, entry) in rates.pipelines {
+            // Every module's times while it's in focus; otherwise only those shown elsewhere, such as in the code level.
+            let timing: [String: Duration] = entry.timing.map { every in
+                guard entry.timedModules != nil else { return ["*": duration(every)] }
+                let keys = host.pipeline(name)?.timingWanted ?? []
+                return Dictionary(uniqueKeysWithValues: keys.map { ($0, duration(every)) })
+            } ?? [:]
             pipelines[name] = PipelinePlan(
                 totals: duration(entry.totals),
                 modules: entry.modules.map { ["*": duration($0)] } ?? [:],
                 links: entry.links.map { ["*": duration($0)] } ?? [:],
-                timing: entry.timing.map { ["*": duration($0)] } ?? [:],
+                timing: timing,
                 bytes: entry.bytes.map { ["*": duration($0)] } ?? [:],
                 arrivals: entry.places.map { ["*": duration($0)] } ?? [:],
                 destinations: entry.places.map { ["*": duration($0)] } ?? [:]

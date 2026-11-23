@@ -3,6 +3,7 @@ import Foundation
 import MeepClient
 import Simulation
 import Testing
+import TestSupport
 import Transport
 @testable import ContinuumKit
 
@@ -241,6 +242,7 @@ struct FlowMapTests {
 
 /// Two simulated hosts, one's Fetch reaching the other's Listen, followed by sessions as the app follows them.
 @MainActor
+@Suite(.simulatedHosts)
 struct SimulatedFlowTests {
     private let feederID = SimulatedHost.id(for: "feeder")
 

@@ -61,16 +61,19 @@ let package = Package(
         // synesthesia-mcp, in the app bundle: joins an MCP client's standard input and output to the app's socket.
         .executableTarget(name: "SynesthesiaMCPBridge", dependencies: ["Transport"]),
 
+        // What the test targets share: the gate that keeps only a few tests running simulated hosts at once.
+        .target(name: "TestSupport", path: "Tests/TestSupport"),
+
         .testTarget(name: "TransportTests", dependencies: ["Transport"]),
         .testTarget(name: "LanguageClientTests", dependencies: ["LanguageClient", "Transport", "MeepClient"], resources: [.copy("Fixtures")]),
-        .testTarget(name: "CodeEditingTests", dependencies: ["CodeEditing", "LanguageClient", "ContinuumKit", "Simulation", "MeepClient", "Transport"]),
+        .testTarget(name: "CodeEditingTests", dependencies: ["TestSupport", "CodeEditing", "LanguageClient", "ContinuumKit", "Simulation", "MeepClient", "Transport", "FlowKit"], resources: [.copy("Fixtures")]),
         .testTarget(name: "MeepClientTests", dependencies: ["MeepClient"], resources: [.copy("Fixtures")]),
         .testTarget(name: "FlowKitTests", dependencies: ["FlowKit"]),
-        .testTarget(name: "ContinuumKitTests", dependencies: ["ContinuumKit", "Simulation", "MeepClient", "FlowKit", "Transport"]),
+        .testTarget(name: "ContinuumKitTests", dependencies: ["TestSupport", "ContinuumKit", "Simulation", "MeepClient", "FlowKit", "Transport"]),
         .testTarget(name: "LayoutKitTests", dependencies: ["LayoutKit"]),
-        .testTarget(name: "StageTests", dependencies: ["Stage", "ContinuumKit", "Simulation", "MeepClient"]),
-        .testTarget(name: "MetalStageTests", dependencies: ["MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
-        .testTarget(name: "AssistantTests", dependencies: ["Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient", "CodeEditing", "LanguageClient"], resources: [.copy("Fixtures")]),
-        .testTarget(name: "SynesthesiaUITests", dependencies: ["SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient", "LanguageClient", "CodeEditing", "Assistant"]),
+        .testTarget(name: "StageTests", dependencies: ["TestSupport", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
+        .testTarget(name: "MetalStageTests", dependencies: ["TestSupport", "MetalStage", "Stage", "ContinuumKit", "Simulation", "MeepClient"]),
+        .testTarget(name: "AssistantTests", dependencies: ["TestSupport", "Assistant", "ContinuumKit", "Simulation", "Stage", "Transport", "MeepClient", "CodeEditing", "LanguageClient"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "SynesthesiaUITests", dependencies: ["TestSupport", "SynesthesiaUI", "Stage", "ContinuumKit", "Simulation", "MeepClient", "LanguageClient", "CodeEditing", "Assistant"]),
     ]
 )

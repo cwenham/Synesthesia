@@ -33,7 +33,10 @@ struct TextPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let workspace, let document = workspace.document(for: pipeline) {
+            if let code = workspace?.code, code.pipelineID == pipeline.id {
+                // Level 1, in the Meeplang's place, which stays open behind it.
+                CodePane(code: code)
+            } else if let workspace, let document = workspace.document(for: pipeline) {
                 TextHeader(document: document, service: workspace.language)
                 Divider()
                 if let proposal = document.proposal {

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 import MeepClient
 import Simulation
 @testable import ContinuumKit
@@ -27,6 +28,7 @@ struct AddressTests {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct HostSessionTests {
     @Test func aSimulatedHostFillsInTheContinuum() async throws {
         let continuum = Continuum()
@@ -159,6 +161,7 @@ actor Counter {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct ProbeTests {
     private func following(capabilities: [String] = ["observe"]) async throws -> (MeepHost, HostSession, SimulatedHost) {
         let continuum = Continuum()

@@ -62,7 +62,10 @@ public enum SidebarPrompt {
             }
             lines.append("Selected on the canvas: \(modules.joined(separator: ", ")).")
         }
-        if viewer.showsText, let stage = viewer.stage {
+        if viewer.showsText, let stage = viewer.stage, let code = viewer.code, code.pipelineID == stage.pipeline.id {
+            let module = code.subject.address.map { " of \($0) (\(code.subject.label))" } ?? ""
+            lines.append("The C# of \(code.shownCode?.name ?? code.subject.verb)\(module) shows beside the canvas, in place of its Meeplang.")
+        } else if viewer.showsText, let stage = viewer.stage {
             let edited = viewer.document(for: stage.pipeline)?.isEdited == true
             lines.append("Its Meeplang is open beside the canvas\(edited ? ", with changes not saved" : "").")
         }

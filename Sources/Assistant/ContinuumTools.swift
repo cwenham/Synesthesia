@@ -40,6 +40,18 @@ public protocol Viewer: AnyObject {
     func inject(_ body: InjectBody, into key: String, of pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async -> InjectionResult
     /// The probes open on a pipeline.
     func probes(for pipeline: MeepPipeline) -> [Probe]
+    /// The C# showing in place of the Meeplang, if it is (design, section 2, level 1).
+    var code: CodeLevel? { get }
+    /// Where C# is read from: files on this Mac, or SourceLink addresses over HTTPS, kept in a cache.
+    var sources: SourceLibrary? { get }
+    /// Shows the C# of a module's inflection beside the canvas, or `inflection` of its verb if it's named.
+    func showCode(of pipeline: MeepPipeline, host: MeepHost, at key: String, inflection: String?) -> CodeLevel?
+}
+
+extension Viewer {
+    public var code: CodeLevel? { nil }
+    public var sources: SourceLibrary? { nil }
+    public func showCode(of pipeline: MeepPipeline, host: MeepHost, at key: String, inflection: String?) -> CodeLevel? { nil }
 }
 
 /// What became of a message offered to the person to send.
@@ -73,9 +85,10 @@ public enum ContinuumTools {
 
         Start with list_continuum. describe_pipeline gives a pipeline's modules, links and counts; watch_counts \
         measures them over a few seconds; read_pipeline_text gives its Meeplang, as the person is editing it if \
-        they are; describe_verbs says what each verb does and takes. describe_view says what the canvas and the \
-        text beside it show, which is cheaper and more exact than capture_view's image. show points the app at an \
-        address so the person can see what you mean. propose_edits shows changes to a pipeline's text for the \
+        they are; describe_verbs says what each verb does and takes; read_inflection_source gives the C# behind \
+        one, with the handling times of the modules that run it. describe_view says what the canvas and the text \
+        or C# beside it show, which is cheaper and more exact than capture_view's image. show points the app at an \
+        address so the person can see what you mean, and can open a module's C#. propose_edits shows changes to a pipeline's text for the \
         person to accept or reject; nothing changes unless they accept. sample_tap shows real messages a module \
         emits or passes on; inject_message offers a message for the person to send into a module.
         """
@@ -86,6 +99,7 @@ public enum ContinuumTools {
             describePipeline(viewer),
             readPipelineText(viewer),
             describeVerbs(viewer),
+            readInflectionSource(viewer),
             watchCounts(viewer),
             describeView(viewer),
             captureView(viewer),
@@ -348,7 +362,7 @@ public enum ContinuumTools {
     static func describeView(_ viewer: Viewer) -> Tool {
         Tool(
             name: "describe_view", title: "Describe what the canvas shows",
-            description: "What the app's canvas is showing, as structure. The canvas zooms continuously from the mesh of hosts, to a host's pipelines drawn as districts, to one pipeline's tiles: it says the level, what's in focus, and each host and pipeline on screen with its place and roll-up, and how much detail each is asked for. At the pipeline level it also gives each tile's place and label, and on each wire whether particles show single messages or a rate. When the Meeplang is open beside it, says whether it's saved, whether it loads, and its problems; the canvas then draws the text as typed, with modules not running yet marked. Cheaper and more exact than capture_view.",
+            description: "What the app's canvas is showing, as structure. The canvas zooms continuously from the mesh of hosts, to a host's pipelines drawn as districts, to one pipeline's tiles: it says the level, what's in focus, and each host and pipeline on screen with its place and roll-up, and how much detail each is asked for. At the pipeline level it also gives each tile's place and label, and on each wire whether particles show single messages or a rate. When the Meeplang is open beside it, says whether it's saved, whether it loads, and its problems; the canvas then draws the text as typed, with modules not running yet marked. When the C# of a module's verb shows there instead (the code level), says which inflection, where its C# came from, the lines on screen, and the handling times in its gutter. Cheaper and more exact than capture_view.",
             inputSchema: ["type": "object", "properties": [:]]
         ) { _ in
             var result: [String: JSONValue] = ["selected": viewer.selection.map { .string($0.description) } ?? .null]
@@ -361,7 +375,9 @@ public enum ContinuumTools {
                 return .json(.object(result))
             }
             result["canvas"] = describe(stage)
-            if viewer.showsText, let document = viewer.document(for: stage.pipeline) {
+            if viewer.showsText, let code = viewer.code, code.pipelineID == stage.pipeline.id {
+                result["code"] = describe(code)
+            } else if viewer.showsText, let document = viewer.document(for: stage.pipeline) {
                 result["text"] = describe(document)
             }
             let probes = viewer.probes(for: stage.pipeline)
@@ -395,8 +411,15 @@ public enum ContinuumTools {
     static func show(_ viewer: Viewer) -> Tool {
         Tool(
             name: "show", title: "Show something in the app",
-            description: "Points the app at an address so the person can see what you mean: the canvas zooms to it and it's selected in the sidebar. A host is shown with its pipelines as districts; a pipeline whole, with its tiles; a module close up, selected. meep:// alone, with no host, shows the whole mesh of hosts; boundary draws back to the edge of the Continuum, with every host a node and the endpoints outside Meep round them.",
-            inputSchema: ["type": "object", "properties": ["address": addressSchema], "required": ["address"]],
+            description: "Points the app at an address so the person can see what you mean: the canvas zooms to it and it's selected in the sidebar. A host is shown with its pipelines as districts; a pipeline whole, with its tiles; a module close up, selected, and with code set, the C# of its inflection beside it. meep:// alone, with no host, shows the whole mesh of hosts; boundary draws back to the edge of the Continuum, with every host a node and the endpoints outside Meep round them.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "address": addressSchema,
+                    "code": ["type": "boolean", "default": false, "description": "With a module's address, also opens the C# of the inflection it runs beside the canvas, in place of the Meeplang."],
+                ],
+                "required": ["address"],
+            ],
             readOnly: false
         ) { arguments in
             if let text = arguments["address"]?.string?.trimmingCharacters(in: .whitespaces), ["meep://", "meep:///", "mesh"].contains(text) {
@@ -434,7 +457,14 @@ public enum ContinuumTools {
                 try await Task.sleep(for: .milliseconds(50))
             }
             viewer.stage?.show(module.key)
-            return .json(["shown": .string(pipeline.address.module(module.key).description), "label": .string(module.label)])
+            var shown: [String: JSONValue] = ["shown": .string(pipeline.address.module(module.key).description), "label": .string(module.label)]
+            if arguments["code"]?.bool == true {
+                guard let code = viewer.showCode(of: pipeline, host: host, at: module.key, inflection: nil) else {
+                    throw ToolError("\(module.label)'s C# can't be shown here.")
+                }
+                shown["code"] = .string(code.subject.name)
+            }
+            return .json(.object(shown))
         }
     }
 

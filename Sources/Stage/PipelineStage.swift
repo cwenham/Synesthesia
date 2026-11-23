@@ -166,6 +166,8 @@ public final class PipelineStage {
     /// The latest ask to open the text beside the canvas: zooming in past the closest zoom over a tile, or
     /// double-clicking one.
     public private(set) var textRequest: TextRequest?
+    /// The latest ask to show the C# of a module's inflection beside the canvas (design, section 2, level 1).
+    public private(set) var codeRequest: TextRequest?
     /// Edits proposed and waiting, drawn over what's shown.
     public private(set) var proposal: ProposalGraph?
     /// What a drag would drop onto now, lit as if hovered.
@@ -1007,6 +1009,12 @@ public final class PipelineStage {
     public func requestText(at key: String?) {
         textRequests += 1
         textRequest = TextRequest(id: textRequests, key: key)
+    }
+
+    /// Asks for the C# of `key`'s inflection beside the canvas.
+    public func requestCode(at key: String) {
+        textRequests += 1
+        codeRequest = TextRequest(id: textRequests, key: key)
     }
 
     // MARK: Dragging tiles

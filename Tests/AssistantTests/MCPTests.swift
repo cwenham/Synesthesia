@@ -6,6 +6,7 @@ import Foundation
 import Simulation
 import Stage
 import Testing
+import TestSupport
 import Transport
 import MeepClient
 @testable import Assistant
@@ -106,8 +107,23 @@ final class TestViewer: Viewer {
         proposed.append((edits, summary))
         return decision
     }
-    var showsText: Bool { false }
-    var language: LanguageService? { nil }
+    var showsText: Bool { code != nil }
+    /// The language server, in tests of the verb catalogue: a fake answering from captured replies.
+    var language: LanguageService?
+    var sources: SourceLibrary?
+    private(set) var code: CodeLevel?
+
+    /// As the app's workspace does: shows the module's C#, read as it shows.
+    func showCode(of pipeline: MeepPipeline, host: MeepHost, at key: String, inflection: String?) -> CodeLevel? {
+        guard var subject = CodeSubject.module(key, in: pipeline, host: host, document: nil) else { return nil }
+        subject.inflection = inflection
+        let level = CodeLevel(subject: subject, continuum: continuum)
+        code = level
+        if let language, let sources {
+            Task { await level.load(using: language, uri: nil, library: sources) }
+        }
+        return level
+    }
 
     func canvasImage() -> CGImage? {
         images += 1
@@ -132,6 +148,7 @@ final class TestViewer: Viewer {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct MCPSessionTests {
     private func connect() async throws -> (TestClient, TestViewer, MCPSession) {
         let viewer = try await TestViewer()
@@ -159,7 +176,7 @@ struct MCPSessionTests {
 
         let tools = try await client.request("tools/list")
         let names = tools["result"]?["tools"]?.array?.compactMap { $0["name"]?.string }
-        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "describe_verbs", "watch_counts", "describe_view", "capture_view", "show", "propose_edits", "sample_tap", "inject_message"])
+        #expect(names == ["list_continuum", "describe_pipeline", "read_pipeline_text", "describe_verbs", "read_inflection_source", "watch_counts", "describe_view", "capture_view", "show", "propose_edits", "sample_tap", "inject_message"])
         for tool in tools["result"]?["tools"]?.array ?? [] {
             #expect(tool["inputSchema"]?["type"] == "object")
             #expect(tool["description"]?.string?.isEmpty == false)
@@ -204,16 +221,22 @@ struct MCPSessionTests {
     @Test func callsRunSideBySide() async throws {
         let (client, viewer, _) = try await connect()
         defer { viewer.stop() }
-        let start = ContinuousClock.now
-        async let slow = client.request("tools/call", ["name": "watch_counts", "arguments": ["address": "meep://sim/ticker", "seconds": 1]])
+        // Order, not time, so a busy Mac can't fail it: the quick call is answered while the slow one still watches.
+        let answered = Answered()
+        let slow = Task {
+            let answer = try await client.request("tools/call", ["name": "watch_counts", "arguments": ["address": "meep://sim/ticker", "seconds": 3]])
+            await answered.mark()
+            return answer
+        }
         let quick = try await client.request("tools/call", ["name": "list_continuum"])
-        #expect(ContinuousClock.now - start < .milliseconds(900), "the quick call didn't wait for the slow one")
+        #expect(await !answered.yet, "the quick call didn't wait for the slow one")
         #expect(quick["result"]?["isError"] == false)
-        #expect(try await slow["result"]?["isError"] == false)
+        #expect(try await slow.value["result"]?["isError"] == false)
     }
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct ToolTests {
     private func call(_ registry: ToolRegistry, _ name: String, _ arguments: JSONValue = [:]) async throws -> (JSONValue?, ToolResult) {
         let result = try #require(await registry.call(name, arguments: arguments))
@@ -444,7 +467,8 @@ struct ToolTests {
         let viewer = try await TestViewer()
         defer { viewer.stop() }
         let registry = ContinuumTools.registry(for: viewer)
-        let (value, result) = try await call(registry, "sample_tap", ["address": "ticker/m1", "seconds": 1, "limit": 3])
+        // The tap ends at its limit, so a long window costs nothing unless the Mac is too busy to tick quickly.
+        let (value, result) = try await call(registry, "sample_tap", ["address": "ticker/m1", "seconds": 10, "limit": 3])
         #expect(!result.isError)
         #expect(value?["messages"]?.array?.count == 3)
         #expect(value?["messages"]?.array?.first?["content"]?["Count"] != nil)
@@ -498,7 +522,7 @@ struct SocketServerTests {
         "/tmp/syn-\(UUID().uuidString.prefix(8)).sock"
     }
 
-    @Test func connectionsAreServedAndTheFileRemoved() async throws {
+    @Test(.simulatedHosts) func connectionsAreServedAndTheFileRemoved() async throws {
         let path = temporaryPath()
         let server = try UnixSocketServer.listen(path: path) { stream in
             Task {
@@ -547,7 +571,7 @@ struct BridgeTests {
         return FileManager.default.isExecutableFile(atPath: built.path) ? built : nil
     }
 
-    @Test(.enabled(if: BridgeTests.bridge != nil, "needs swift build to have built synesthesia-mcp"))
+    @Test(.simulatedHosts, .enabled(if: BridgeTests.bridge != nil, "needs swift build to have built synesthesia-mcp"))
     func theBridgeCarriesTheProtocol() async throws {
         let viewer = try await TestViewer()
         defer { viewer.stop() }
@@ -645,3 +669,9 @@ func waitForFlows(_ continuum: Continuum, seconds: Double = 20, _ condition: (Fl
     }
 }
 
+
+/// Whether a call has been answered yet.
+private actor Answered {
+    private(set) var yet = false
+    func mark() { yet = true }
+}

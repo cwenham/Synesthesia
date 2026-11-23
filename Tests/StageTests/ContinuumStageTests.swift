@@ -4,11 +4,13 @@ import Foundation
 import MeepClient
 import Simulation
 import Testing
+import TestSupport
 @testable import Stage
 
 /// The continuous zoom (design, section 2): hosts and their pipelines in one world, drawn at the level the camera is
 /// at, and asking each host only for what's shown.
 @MainActor
+@Suite(.simulatedHosts)
 struct ContinuumStageTests {
     let size = CGSize(width: 1200, height: 800)
 

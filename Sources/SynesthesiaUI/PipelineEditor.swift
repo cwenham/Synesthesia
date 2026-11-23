@@ -248,6 +248,11 @@ public final class PipelineEditor: StageEditing {
         workspace.compose(into: key, of: pipeline)
     }
 
+    /// Shows the C# of a module's inflection in place of the text.
+    public func showCode(of key: String) {
+        workspace.showCode(of: pipeline, host: host, at: key)
+    }
+
     /// Whether the dock under the canvas shows the probes rather than the modules' counts.
     public var showsProbes = false
 

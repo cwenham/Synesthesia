@@ -5,6 +5,7 @@ import MeepClient
 import Simulation
 import Stage
 import Testing
+import TestSupport
 @testable import SynesthesiaUI
 
 struct NewModuleTests {
@@ -38,6 +39,7 @@ struct NewModuleTests {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct SavedProbeTests {
     @Test func savedProbesOpenAgainWithThePipelineFindingMovedModulesByName() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("synesthesia-saved-\(UUID().uuidString.prefix(8))")
@@ -82,6 +84,7 @@ struct SavedProbeTests {
 }
 
 @MainActor
+@Suite(.simulatedHosts)
 struct DropTests {
     private func editing() async throws -> (PipelineEditor, PipelineStage, Workspace, HostSession) {
         let continuum = Continuum()

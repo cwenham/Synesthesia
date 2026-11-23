@@ -1,0 +1,1434 @@
+{
+ "jsonrpc": "2.0",
+ "id": 9,
+ "result": {
+  "verbs": [
+   {
+    "verb": "Batch",
+    "inflection": "Batch",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "size",
+      "type": "number",
+      "positional": true,
+      "required": false,
+      "perMessage": false,
+      "description": "How many messages make a batch."
+     },
+     {
+      "name": "within",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "How long after its first message a batch goes out, however few it has."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "Batched"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Gathers messages into a Batched message: so many at a time, or whatever has come within a while of the first, whichever is first. In Meeplang: Batch 100, Batch within=1s, or Batch 100 within=1s.",
+    "class": "Meep2.Modules.Batch",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Combining.cs",
+     "line": 34,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Combining.cs"
+    }
+   },
+   {
+    "verb": "Classify",
+    "inflection": "Classify",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "tree",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The name of the classification tree to classify with, the same as Learn's."
+     },
+     {
+      "name": "text",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The text to classify, worked out for each message. Without it, the message's own text."
+     },
+     {
+      "name": "file",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The file the tree is saved in, if Learn was given one."
+     },
+     {
+      "name": "min-training",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "10",
+      "description": "How many documents a class must have learned before Classify will choose it, so a class taught only a few times doesn't win by chance. 10 unless set (Q145)."
+     },
+     {
+      "name": "against",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "Classes to score the others against, separated by commas, such as \"Ham\" for a spam filter (Q147). Each other class is then scored against these alone, and these are never the class emitted."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "ClassifiedMessage"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Works out which class of a named classification tree each message belongs to, from what Learn has taught the tree, and emits a ClassifiedMessage with the class and its score. In Meeplang: Classify \"topics\", then perhaps Where msg.Score > 0.9; or Classify \"mail\" against=\"Ham\".",
+    "class": "Meep2.Modules.Classify",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Classifying.cs",
+     "line": 128,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Classifying.cs"
+    }
+   },
+   {
+    "verb": "Distribute",
+    "inflection": "Distribute",
+    "role": "router",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "copies",
+      "type": "number",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "How many copies of the branch to make, at least 2."
+     },
+     {
+      "name": "by",
+      "type": "any",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The key that decides a message's copy, so messages with the same key keep their order."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": false,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Spreads messages across copies of the branch below it, so a slow module runs side by side, while messages with the same key always take the same copy and keep their order (Q53). In Meeplang: Distribute 4 by msg.CustomerId, with the branch indented under it.",
+    "class": "Meep2.Modules.Distribute",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Combining.cs",
+     "line": 357,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Combining.cs"
+    }
+   },
+   {
+    "verb": "Enumerate",
+    "inflection": "Enumerate",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "book",
+      "type": "book",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The book to read from, such as \"Countries\", or \"Plugin.Book\" for a plugin's."
+     },
+     {
+      "name": "index",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "Which item to emit, worked out for each message, counting from 0 and wrapping around the end. Without it, the items in order, one for each message."
+     },
+     {
+      "name": "all",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Emits every item in the book, in order, for each message, instead of one."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "BookItem"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Emits an item from a book in the library for each message it receives, as a BookItem. In Meeplang: Enumerate \"Countries\" to step through a book in order, one item for each message, or Enumerate \"Lorem Ipsum\" index=msg.Count to choose the item, or Enumerate \"Common Passwords\" all=true for every item.",
+    "class": "Meep2.Modules.Enumerate",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Enumerate.cs",
+     "line": 33,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Enumerate.cs"
+    }
+   },
+   {
+    "verb": "Extract",
+    "inflection": "Extract",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "path",
+      "type": "path",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The JSONPath query, such as $.departures[*]."
+     }
+    ],
+    "takes": [
+     "IHasText"
+    ],
+    "emits": [
+     {
+      "type": "JsonMessage"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Reads a message's content as JSON and emits a JsonMessage for each value a JSONPath query matches. In Meeplang: Extract \"$.departures[*]\".",
+    "class": "Meep2.Modules.Extract",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Extract.cs",
+     "line": 13,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Extract.cs"
+    }
+   },
+   {
+    "verb": "Fetch",
+    "inflection": "File",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": true,
+      "description": "The address to fetch, worked out for each message."
+     },
+     {
+      "name": "timeout",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1m40s",
+      "description": "How long to wait for the whole response. 100 seconds unless set."
+     },
+     {
+      "name": "stream",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Leaves a successful response's body unread, for one module to read, such as Send passing it on to a client without holding it all in memory (Q51). The connection stays open until then. Only HTTP streams."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "16777216",
+      "description": "The largest body to read, in bytes. 16 MiB unless set."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "FileText"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Fetch's File inflection: reads a file for each message it receives, and emits it as FileText. In Meeplang: Fetch \"~/config/stops.json\" or Fetch \"file:///var/data/stops.json\".",
+    "class": "Meep2.Modules.FileFetch",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Fetch.cs",
+     "line": 213,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Fetch.cs"
+    }
+   },
+   {
+    "verb": "Fetch",
+    "inflection": "HTTP",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": true,
+      "description": "The address to fetch, worked out for each message."
+     },
+     {
+      "name": "timeout",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1m40s",
+      "description": "How long to wait for the whole response. 100 seconds unless set."
+     },
+     {
+      "name": "stream",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Leaves a successful response's body unread, for one module to read, such as Send passing it on to a client without holding it all in memory (Q51). The connection stays open until then. Only HTTP streams."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "16777216",
+      "description": "The largest body to read, in bytes. 16 MiB unless set."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "HttpResponse"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Fetch's HTTP inflection: fetches a web address for each message it receives, and emits the response as HttpResponse. In Meeplang: Fetch \"https://api.example.com/stops/{msg.StopId}\".",
+    "class": "Meep2.Modules.HttpFetch",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Fetch.cs",
+     "line": 19,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Fetch.cs"
+    }
+   },
+   {
+    "verb": "Forget",
+    "inflection": "Forget",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "tree",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The name of the classification tree, the same as Learn's."
+     },
+     {
+      "name": "class",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The one class to forget, worked out for each message. Without it, everything."
+     },
+     {
+      "name": "file",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The file the tree is saved in, if Learn was given one."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": false,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Makes a named classification tree forget everything it has learned, or one class, then passes the message on. In Meeplang: Forget \"topics\", or Forget \"topics\" class=\"Science\".",
+    "class": "Meep2.Modules.Forget",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Classifying.cs",
+     "line": 214,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Classifying.cs"
+    }
+   },
+   {
+    "verb": "Interval",
+    "inflection": "Interval",
+    "role": "source",
+    "kind": "source",
+    "parameters": [
+     {
+      "name": "period",
+      "type": "duration",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "How long between ticks."
+     },
+     {
+      "name": "count",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "How many ticks to emit before finishing. Without it, Interval runs until stopped."
+     },
+     {
+      "name": "count-start",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1",
+      "description": "The number of the first tick, such as 0 to match Enumerate's index (Q163). 1 unless set. It doesn't change how many ticks Count emits."
+     },
+     {
+      "name": "payload",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "Text to put in each tick, for telling intervals apart."
+     }
+    ],
+    "takes": [],
+    "emits": [
+     {
+      "type": "Tick"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": true,
+    "description": "Emits a Tick straight away, then again every period, until stopped or until it has emitted count ticks. In Meeplang: Interval 1m or Interval 500ms count=3. Ticks are numbered from 1, or from count-start, as in Interval 1s count-start=0.",
+    "class": "Meep2.Modules.Interval",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Sources.cs",
+     "line": 12,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Sources.cs"
+    }
+   },
+   {
+    "verb": "Learn",
+    "inflection": "Learn",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "tree",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The name of the classification tree to teach, the same as Classify's. Starting it with shared: shares it with every pipeline."
+     },
+     {
+      "name": "class",
+      "type": "text",
+      "positional": false,
+      "required": true,
+      "perMessage": true,
+      "description": "The class the message belongs to, such as \"Science\", worked out for each message."
+     },
+     {
+      "name": "text",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The text to learn from, worked out for each message. Without it, the message's own text."
+     },
+     {
+      "name": "file",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The file to save the tree in, instead of the one in ~/.meep/trees."
+     },
+     {
+      "name": "save-every",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "5",
+      "description": "How many documents to learn between saves. 5 unless set; 0 keeps the tree in memory only."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": false,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Teaches a named classification tree that each message belongs to a class, then passes the message on. Classify reads the same tree by its name. In Meeplang: Learn \"topics\" class=\"Science\", or Learn \"shared:topics\" class=msg.section text=msg.body.",
+    "class": "Meep2.Modules.Learn",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Classifying.cs",
+     "line": 26,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Classifying.cs"
+    }
+   },
+   {
+    "verb": "Listen",
+    "inflection": "HTTP",
+    "role": "inlet",
+    "kind": "source",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The address to listen at, such as http://0.0.0.0:8080/quote/. Host 0.0.0.0 listens on every network, and the path says which requests are this Listen's: those to it and below it."
+     },
+     {
+      "name": "certificate",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The certificate for an https:// address: a PEM file, or a PKCS#12 file (.pfx or .p12) without a password."
+     },
+     {
+      "name": "key",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The certificate's private key, as a PEM file, when it isn't in the certificate's own file."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "16777216",
+      "description": "The largest request body to read, in bytes. 16 MiB unless set."
+     },
+     {
+      "name": "stream",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Leaves request bodies unread, for one module to read (Q51)."
+     },
+     {
+      "name": "default-status",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "500",
+      "description": "The status of the reply sent to a request nothing answered (Q50). 500 unless set."
+     },
+     {
+      "name": "default-reply",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "\"No module answered this request.\"",
+      "description": "The text of the reply sent to a request nothing answered."
+     }
+    ],
+    "takes": [],
+    "emits": [
+     {
+      "type": "HttpRequest"
+     }
+    ],
+    "roleDeclared": true,
+    "emitsInput": false,
+    "reconfigurable": true,
+    "description": "Listen's HTTP inflection: a source that receives HTTP and HTTPS requests and emits each one as an HttpRequest carrying a lease on its connection. In Meeplang: Listen \"http://0.0.0.0:8080/quote/\", then Send to reply.",
+    "class": "Meep2.Modules.HttpListen",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/HttpListen.cs",
+     "line": 35,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/HttpListen.cs"
+    }
+   },
+   {
+    "verb": "Listen",
+    "inflection": "TCP",
+    "role": "inlet",
+    "kind": "source",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The address to listen at, such as tcp://0.0.0.0:7000. Host 0.0.0.0 listens on every network."
+     },
+     {
+      "name": "end",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The text that ends each message, such as \"\\r\\n.\\r\\n\". It isn't part of the message, and the connection stays open for more. Without it, or Length, each line is a message."
+     },
+     {
+      "name": "length",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The size of every message, in bytes, for a protocol whose messages are all the same length."
+     },
+     {
+      "name": "connections",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Also emits TcpConnected and TcpDisconnected as clients come and go."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1048576",
+      "description": "The longest message to read, in bytes. 1 MiB unless set, or Length if that's longer."
+     }
+    ],
+    "takes": [],
+    "emits": [
+     {
+      "type": "TcpMessage"
+     },
+     {
+      "type": "TcpConnected",
+      "when": "connections"
+     },
+     {
+      "type": "TcpDisconnected",
+      "when": "connections"
+     }
+    ],
+    "roleDeclared": true,
+    "emitsInput": false,
+    "reconfigurable": true,
+    "description": "Listen's TCP inflection: a source that accepts TCP connections and emits each message that arrives on one as a TcpMessage carrying a lease on its connection. In Meeplang: Listen \"tcp://0.0.0.0:7000\".",
+    "class": "Meep2.Modules.TcpListen",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/TcpListen.cs",
+     "line": 35,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/TcpListen.cs"
+    }
+   },
+   {
+    "verb": "Listen",
+    "inflection": "WebSocket",
+    "role": "inlet",
+    "kind": "source",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The address to listen at, such as ws://0.0.0.0:8080/chat/. Host 0.0.0.0 listens on every network, and the path says which connections are this Listen's: those to it and below it."
+     },
+     {
+      "name": "certificate",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The certificate for a wss:// address: a PEM file, or a PKCS#12 file (.pfx or .p12) without a password."
+     },
+     {
+      "name": "key",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The certificate's private key, as a PEM file, when it isn't in the certificate's own file."
+     },
+     {
+      "name": "origins",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The pages that may connect, besides those on Listen's own host: origins separated by commas, such as \"https://a.example, https://b.example\", or \"*\" for any (Q151)."
+     },
+     {
+      "name": "connections",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Also emits WebSocketConnected and WebSocketDisconnected as clients come and go."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1048576",
+      "description": "The longest message to read, in bytes. 1 MiB unless set."
+     },
+     {
+      "name": "ping",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "30s",
+      "description": "How often to ping each client, closing connections that stop answering. 30 seconds unless set; 0 turns it off."
+     },
+     {
+      "name": "idle-timeout",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "Closes a connection nothing has been sent or received on for this long. Off unless set."
+     },
+     {
+      "name": "max-queued",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "256",
+      "description": "How many messages each connection queues to send before dropping more (Q153). 256 unless set."
+     }
+    ],
+    "takes": [],
+    "emits": [
+     {
+      "type": "WebSocketText"
+     },
+     {
+      "type": "WebSocketBinary"
+     },
+     {
+      "type": "WebSocketConnected",
+      "when": "connections"
+     },
+     {
+      "type": "WebSocketDisconnected",
+      "when": "connections"
+     }
+    ],
+    "roleDeclared": true,
+    "emitsInput": false,
+    "reconfigurable": true,
+    "description": "Listen's WebSocket inflection: a source that accepts WebSocket connections and emits each message that arrives on one as a WebSocketText or WebSocketBinary, carrying a lease on its connection. In Meeplang: Listen \"ws://0.0.0.0:8080/chat/\" as Room, then Send to reply, or Send \"Room\" to send to every connection.",
+    "class": "Meep2.Modules.WebSocketListen",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/WebSocketListen.cs",
+     "line": 51,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/WebSocketListen.cs"
+    }
+   },
+   {
+    "verb": "Read",
+    "inflection": "Read",
+    "role": "source",
+    "kind": "source",
+    "parameters": [
+     {
+      "name": "path",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The file to read."
+     }
+    ],
+    "takes": [],
+    "emits": [
+     {
+      "type": "FileText"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Reads a text file once and emits its contents as FileText. In Meeplang: Read \"~/notes.txt\". A leading ~ means your home folder; other relative paths start from the current folder.",
+    "class": "Meep2.Modules.Read",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Sources.cs",
+     "line": 91,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Sources.cs"
+    }
+   },
+   {
+    "verb": "Save",
+    "inflection": "Save",
+    "role": "outlet",
+    "kind": "passthrough",
+    "parameters": [
+     {
+      "name": "path",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": true,
+      "description": "The file to save to, worked out for each message."
+     },
+     {
+      "name": "mode",
+      "type": "choice",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "append",
+      "choices": [
+       "append",
+       "overwrite"
+      ],
+      "description": "Whether to add a line to the end of the file or replace it. Append unless set."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Saves each message's text to a file, adding a line to the end by default. A passthrough module: messages carry on downstream straight away. In Meeplang: Save \"~/bus/{msg.Created:yyyy-MM-dd}.jsonl\".",
+    "class": "Meep2.Modules.Save",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Output.cs",
+     "line": 64,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Output.cs"
+    }
+   },
+   {
+    "verb": "Send",
+    "inflection": "Broadcast",
+    "role": "outlet",
+    "kind": "passthrough",
+    "parameters": [
+     {
+      "name": "to",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The name of the Listen.WebSocket to send to, as given with as."
+     },
+     {
+      "name": "text",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "What to send, worked out for each message. Without it, Send sends the message itself."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Send's Broadcast inflection: sends each message to every client connected to a Listen.WebSocket, named with as (Q152). In Meeplang: Listen \"ws://0.0.0.0:8080/chat/\" as Room, then Send \"Room\".",
+    "class": "Meep2.Modules.SendBroadcast",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Send.cs",
+     "line": 192,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Send.cs"
+    }
+   },
+   {
+    "verb": "Send",
+    "inflection": "HTTP",
+    "role": "outlet",
+    "kind": "passthrough",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": true,
+      "description": "The address to POST to, worked out for each message."
+     },
+     {
+      "name": "text",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The body to send, worked out for each message. Without it, Send sends the message itself."
+     },
+     {
+      "name": "content-type",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The body's media type. Without it, the message's own, or text."
+     },
+     {
+      "name": "timeout",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1m40s",
+      "description": "How long to wait for the whole response. 100 seconds unless set."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "16777216",
+      "description": "The largest response body to read, in bytes. 16 MiB unless set."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "HttpResponse"
+     }
+    ],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Send's HTTP inflection: POSTs each message to an http:// or https:// address, and emits the response as HttpResponse, as Fetch does for GET. In Meeplang: Send \"https://api.example.com/claims\".",
+    "class": "Meep2.Modules.SendHttp",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Send.cs",
+     "line": 534,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Send.cs"
+    }
+   },
+   {
+    "verb": "Send",
+    "inflection": "Reply",
+    "role": "outlet",
+    "kind": "passthrough",
+    "parameters": [
+     {
+      "name": "text",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "What to send, worked out for each message. Without it, Send sends the message itself."
+     },
+     {
+      "name": "status",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The HTTP status: 200 unless set."
+     },
+     {
+      "name": "content-type",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The HTTP media type. Without it, the message's own, or text."
+     },
+     {
+      "name": "error-reply",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "default": "Something went wrong.",
+      "description": "What to send for an error, worked out from the error (Q98)."
+     },
+     {
+      "name": "error-status",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The HTTP status for an error: 500 unless set."
+     },
+     {
+      "name": "details",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Sends everything known about an error, instead of ErrorReply: its description, and the exception behind it. Meant for tools and testing, since it can show internal details to whoever asked."
+     },
+     {
+      "name": "end",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "What to write after the text on a TCP connection. Without it, what ends the connection's own messages: a line break, or the end its Listen or Send was given."
+     },
+     {
+      "name": "final",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Closes the connection after writing to it."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Send without an address replies to where a message came from, through its lease: an HTTP response for a request from Listen.HTTP, or a message on a connection from Listen.TCP, Listen.WebSocket or Send itself. In Meeplang: Send text=\"Hello, {msg.Query['name']}\", or Send to send the message itself back.",
+    "class": "Meep2.Modules.SendReply",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Send.cs",
+     "line": 39,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Send.cs"
+    }
+   },
+   {
+    "verb": "Send",
+    "inflection": "TCP",
+    "role": "outlet",
+    "kind": "passthrough",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": true,
+      "description": "The address to send to, such as tcp://printer.local:9100, worked out for each message."
+     },
+     {
+      "name": "text",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "What to send, worked out for each message. Without it, Send sends the message's text."
+     },
+     {
+      "name": "end",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The text that ends each message, both ways, such as \"\\r\\n.\\r\\n\". Without it, or Length, each line is a message."
+     },
+     {
+      "name": "length",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "The size of every message from the server, in bytes, for a protocol whose messages are all the same length."
+     },
+     {
+      "name": "timeout",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "30s",
+      "description": "How long to wait for a message to be sent, connecting included. 30 seconds unless set."
+     },
+     {
+      "name": "tries",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "3",
+      "description": "How many times to try connecting before giving up (Q157). 3 unless set."
+     },
+     {
+      "name": "retry-delay",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1s",
+      "description": "How long to wait between tries. 1 second unless set."
+     },
+     {
+      "name": "connections",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Also emits TcpConnected and TcpDisconnected as the connection opens and ends."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1048576",
+      "description": "The longest message to read from the server, in bytes. 1 MiB unless set, or Length if that's longer."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "TcpMessage"
+     },
+     {
+      "type": "TcpConnected",
+      "when": "connections"
+     },
+     {
+      "type": "TcpDisconnected",
+      "when": "connections"
+     }
+    ],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Send's TCP inflection: writes each message to a tcp:// address, and emits what the server sends back as TcpMessage. In Meeplang: Send \"tcp://printer.local:9100\" text=\"{msg.Text}\".",
+    "class": "Meep2.Modules.SendTcp",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Send.cs",
+     "line": 407,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Send.cs"
+    }
+   },
+   {
+    "verb": "Send",
+    "inflection": "WebSocket",
+    "role": "outlet",
+    "kind": "passthrough",
+    "parameters": [
+     {
+      "name": "url",
+      "type": "text",
+      "positional": true,
+      "required": true,
+      "perMessage": true,
+      "description": "The address to send to, such as wss://feed.example.com/prices, worked out for each message."
+     },
+     {
+      "name": "text",
+      "type": "text",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "What to send, worked out for each message. Without it, Send sends the message itself."
+     },
+     {
+      "name": "timeout",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "30s",
+      "description": "How long to wait for a message to be sent, connecting included. 30 seconds unless set."
+     },
+     {
+      "name": "tries",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "3",
+      "description": "How many times to try connecting before giving up (Q157). 3 unless set."
+     },
+     {
+      "name": "retry-delay",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1s",
+      "description": "How long to wait between tries. 1 second unless set."
+     },
+     {
+      "name": "connections",
+      "type": "bool",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "false",
+      "description": "Also emits WebSocketConnected and WebSocketDisconnected as the connection opens and ends."
+     },
+     {
+      "name": "max-size",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "1048576",
+      "description": "The longest message to read from the server, in bytes. 1 MiB unless set."
+     },
+     {
+      "name": "ping",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "30s",
+      "description": "How often to ping the server, closing the connection if it stops answering. 30 seconds unless set; 0 turns it off."
+     },
+     {
+      "name": "max-queued",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "default": "256",
+      "description": "How many messages the connection queues to send, beyond which Send waits. 256 unless set."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "WebSocketText"
+     },
+     {
+      "type": "WebSocketBinary"
+     },
+     {
+      "type": "WebSocketConnected",
+      "when": "connections"
+     },
+     {
+      "type": "WebSocketDisconnected",
+      "when": "connections"
+     }
+    ],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Send's WebSocket inflection: sends each message to a ws:// or wss:// address, and emits what the server sends back as WebSocketText or WebSocketBinary (Q158). In Meeplang: Send \"wss://feed.example.com/prices\" text=\"{msg.Text}\".",
+    "class": "Meep2.Modules.SendWebSocket",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Send.cs",
+     "line": 283,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Send.cs"
+    }
+   },
+   {
+    "verb": "Tap",
+    "inflection": "Tap",
+    "role": "tap",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "from",
+      "type": "module",
+      "positional": true,
+      "required": true,
+      "perMessage": false,
+      "description": "The name of the module to tap."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Receives everything another module emits, as if it were indented under that module. In Meeplang: Tap Schedule, or Tap Schedule @errors for its errors only.",
+    "class": "Meep2.Modules.Tap",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Flow.cs",
+     "line": 46,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Flow.cs"
+    }
+   },
+   {
+    "verb": "Where",
+    "inflection": "Where",
+    "role": "filter",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "condition",
+      "type": "bool",
+      "positional": true,
+      "required": true,
+      "perMessage": true,
+      "description": "The condition, worked out for each message."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Passes on only the messages a condition is true for. In Meeplang: Where msg.minutesAway < 30.",
+    "class": "Meep2.Modules.Where",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Flow.cs",
+     "line": 13,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Flow.cs"
+    }
+   },
+   {
+    "verb": "WriteLine",
+    "inflection": "WriteLine",
+    "role": "outlet",
+    "kind": "passthrough",
+    "parameters": [
+     {
+      "name": "text",
+      "type": "text",
+      "positional": true,
+      "required": false,
+      "perMessage": true,
+      "description": "What to write, worked out for each message. Without it, each message is written as text."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [],
+    "roleDeclared": true,
+    "emitsInput": true,
+    "reconfigurable": false,
+    "description": "Writes a line for each message to standard output. A passthrough module: messages carry on downstream straight away. In Meeplang: WriteLine \"{msg.route} in {msg.minutesAway} min\", or just WriteLine to write each message as text.",
+    "class": "Meep2.Modules.WriteLine",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Output.cs",
+     "line": 13,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Output.cs"
+    }
+   },
+   {
+    "verb": "Zip",
+    "inflection": "Zip",
+    "role": "step",
+    "kind": "inflection",
+    "parameters": [
+     {
+      "name": "by",
+      "type": "any",
+      "positional": false,
+      "required": false,
+      "perMessage": true,
+      "description": "The key that pairs a message from one input with one from the other. Without it, they pair in the order they come."
+     },
+     {
+      "name": "limit",
+      "type": "number",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "How many messages can wait for a partner at once. When more are waiting, the one that has waited longest becomes an error. Without it, the pipeline's buffer size."
+     },
+     {
+      "name": "within",
+      "type": "duration",
+      "positional": false,
+      "required": false,
+      "perMessage": false,
+      "description": "How long a message waits for its partner before it becomes an error. Without it, it waits until its own deadline, if it has one."
+     }
+    ],
+    "takes": [
+     "Message"
+    ],
+    "emits": [
+     {
+      "type": "Zipped"
+     }
+    ],
+    "roleDeclared": false,
+    "emitsInput": false,
+    "reconfigurable": false,
+    "description": "Pairs a message from its first input with one from its second, as a Zipped message: in the order they come, or by a key both sides share. In Meeplang, with two + lines feeding it: Zip, or Zip by msg.OrderId to pair an order with its payment.",
+    "class": "Meep2.Modules.Zip",
+    "source": {
+     "file": "/Users/cwenham/Projects/Meep2/src/Meep2.Modules/Combining.cs",
+     "line": 108,
+     "url": "https://raw.githubusercontent.com/cwenham/Meep2/810c2fcd6e5d13f61424baea5d67bab16714b02a/src/Meep2.Modules/Combining.cs"
+    }
+   }
+  ]
+ }
+}

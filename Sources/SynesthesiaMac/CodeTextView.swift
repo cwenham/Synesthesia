@@ -20,7 +20,7 @@ struct MacCodeText: NSViewRepresentable {
     }
 
     func makeCoordinator() -> CodeTextCoordinator {
-        CodeTextCoordinator(document: document, stage: stage)
+        CodeTextCoordinator(document: document, stage: stage, workspace: workspace)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -85,6 +85,7 @@ struct MacCodeText: NSViewRepresentable {
 final class CodeTextCoordinator: NSObject, NSTextViewDelegate {
     let document: MeeplangDocument
     let stage: PipelineStage
+    weak var workspace: Workspace?
     weak var textView: CodeTextView?
     weak var gutter: GutterView?
     var appliedReplacement: Int?
@@ -99,9 +100,10 @@ final class CodeTextCoordinator: NSObject, NSTextViewDelegate {
     private var popover: NSPopover?
     var completions: (offset: Int, items: [CompletionItem])?
 
-    init(document: MeeplangDocument, stage: PipelineStage) {
+    init(document: MeeplangDocument, stage: PipelineStage, workspace: Workspace) {
         self.document = document
         self.stage = stage
+        self.workspace = workspace
     }
 
     func stop() {
@@ -258,6 +260,27 @@ final class CodeTextCoordinator: NSObject, NSTextViewDelegate {
     func pointed(at offset: Int?) {
         let key = offset.flatMap { document.module(atLine: document.lines.line(at: $0)) }
         if stage.pointedFromText != key { stage.pointedFromText = key }
+    }
+
+    // MARK: The C# behind a verb
+
+    /// The module whose verb or inflection is at `offset`, for ⌘-clicking it (design, section 2: "Zooming into a verb in
+    /// the text, or ⌘-clicking it, opens the C# of the inflection it resolves to").
+    func verbModule(at offset: Int) -> String? {
+        guard document.highlightsVersion == document.version,
+              document.highlights.contains(where: { ($0.style == .verb || $0.style == .method) && $0.range.contains(offset) }) else { return nil }
+        return document.module(atLine: document.lines.line(at: offset))
+    }
+
+    /// The module on the line at `offset`, for the text's menu.
+    func codeSubject(at offset: Int) -> CodeSubject? {
+        guard let key = document.module(atLine: document.lines.line(at: offset)) else { return nil }
+        return CodeSubject.module(key, in: stage.pipeline, host: stage.host, document: document)
+    }
+
+    func showCode(of key: String) {
+        closeHover()
+        workspace?.showCode(of: stage.pipeline, host: stage.host, at: key)
     }
 
     // MARK: Hovers
@@ -453,6 +476,7 @@ final class CodeTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
+        if event.modifierFlags.contains(.command) { updateCursor(for: event) }
         let point = convert(event.locationInWindow, from: nil)
         let offset = characterIndexForInsertion(at: point)
         let inText = offset >= 0 && offset <= (string as NSString).length
@@ -473,6 +497,49 @@ final class CodeTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         coordinator?.closeHover()
         super.keyDown(with: event)
+    }
+
+    // MARK: The C# behind a verb
+
+    /// ⌘-clicking a verb or inflection shows its C#.
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), event.clickCount == 1 {
+            let offset = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+            if let key = coordinator?.verbModule(at: offset) {
+                coordinator?.showCode(of: key)
+                return
+            }
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// The pointing hand over a verb while ⌘ is down, as a link.
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        updateCursor(for: event)
+    }
+
+    private func updateCursor(for event: NSEvent) {
+        guard let window else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard visibleRect.contains(point) else { return }
+        let offset = characterIndexForInsertion(at: point)
+        if event.modifierFlags.contains(.command), coordinator?.verbModule(at: offset) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
+    }
+
+    /// The text's menu starts with showing the C# of the module on the line clicked.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        let offset = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        if let subject = coordinator?.codeSubject(at: offset), let key = subject.key {
+            menu.insertItem(.separator(), at: 0)
+            menu.insertItem(ClosureMenuItem("Show C# of \(subject.name)") { [weak self] in self?.coordinator?.showCode(of: key) }, at: 0)
+        }
+        return menu
     }
 
     /// The word at `offset`, in this view's coordinates, if the pointer is on it.
@@ -530,26 +597,36 @@ final class CodeScrollView: NSScrollView {
     }
 }
 
-/// Line numbers, and beside each module's first line its messages a second and a sparkline of the last minute, with
-/// a mark on lines that have problems (design, section 2, level 2).
-final class GutterView: NSRulerView {
-    private weak var coordinator: CodeTextCoordinator?
+/// A gutter beside a TextKit 2 text view, in a ``CodeScrollView``: it draws each line on screen through
+/// ``drawLine(_:top:height:)``, again as the text scrolls and once a second while it's in a window, for live figures.
+class LineGutter: NSRulerView {
     private var timer: Timer?
 
-    init(scrollView: NSScrollView, coordinator: CodeTextCoordinator) {
-        self.coordinator = coordinator
+    init(scrollView: NSScrollView, thickness: CGFloat, label: String) {
         super.init(scrollView: scrollView, orientation: .verticalRuler)
         clientView = scrollView.documentView
-        ruleThickness = 104
+        ruleThickness = thickness
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
         scrollView.contentView.postsBoundsChangedNotifications = true
-        setAccessibilityLabel("Line numbers and counts")
+        setAccessibilityLabel(label)
     }
 
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// Counts are refreshed once a second, as level 2 has them, while it's in a window.
+    /// The text view whose lines it numbers.
+    var textView: NSTextView? { clientView as? NSTextView }
+
+    /// The line, from 0, at a UTF-16 offset in the text.
+    func line(at offset: Int) -> Int { 0 }
+
+    /// Draws one line's part of the gutter: `top` is in the gutter's coordinates, `height` the line's.
+    func drawLine(_ line: Int, top: CGFloat, height: CGFloat) {}
+
+    /// Called before the lines on screen are drawn.
+    func willDrawLines() {}
+
+    /// Figures are refreshed once a second, as level 2 has them, while it's in a window.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         timer?.invalidate()
@@ -570,32 +647,59 @@ final class GutterView: NSRulerView {
         bounds.fill()
         CodeTheme.gutterEdge.setFill()
         NSRect(x: bounds.maxX - 1, y: rect.minY, width: 1, height: rect.height).fill()
-        guard let coordinator, let textView = coordinator.textView, let layout = textView.textLayoutManager,
-              let content = layout.textContentManager else { return }
-        let document = coordinator.document
-        let stage = coordinator.stage
+        guard let textView, let layout = textView.textLayoutManager, let content = layout.textContentManager else { return }
+        willDrawLines()
         let visible = textView.visibleRect
         let origin = textView.textContainerOrigin
-        let problemLines = Set(document.diagnostics.filter { $0.uri == nil || $0.uri == document.uri }.map(\.range.start.line))
         let start = layout.textLayoutFragment(for: NSPoint(x: 0, y: max(visible.minY - origin.y, 0)))?.rangeInElement.location ?? content.documentRange.location
 
         layout.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
             let frame = fragment.layoutFragmentFrame.offsetBy(dx: origin.x, dy: origin.y)
             if frame.minY > visible.maxY { return false }
             let offset = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
-            let line = document.lines.line(at: offset)
             let top = convert(NSPoint(x: 0, y: frame.minY), from: textView).y
             let height = fragment.textLineFragments.first?.typographicBounds.height ?? frame.height
-            self.drawLine(line, top: top, height: height, problem: problemLines.contains(line), keys: document.modulesByLine[line] ?? [], stage: stage)
+            self.drawLine(self.line(at: offset), top: top, height: height)
             return true
         }
     }
 
-    private func drawLine(_ line: Int, top: CGFloat, height: CGFloat, problem: Bool, keys: [String], stage: PipelineStage) {
+    /// The line's number, right-aligned against the gutter's edge.
+    func drawNumber(_ line: Int, middle: CGFloat) {
         let number = NSAttributedString(string: "\(line + 1)", attributes: CodeTheme.lineNumber)
         let size = number.size()
-        let middle = top + height / 2
         number.draw(at: NSPoint(x: bounds.maxX - 8 - size.width, y: middle - size.height / 2))
+    }
+}
+
+/// Line numbers, and beside each module's first line its messages a second and a sparkline of the last minute, with
+/// a mark on lines that have problems (design, section 2, level 2).
+final class GutterView: LineGutter {
+    private weak var coordinator: CodeTextCoordinator?
+    private var problemLines: Set<Int> = []
+
+    init(scrollView: NSScrollView, coordinator: CodeTextCoordinator) {
+        self.coordinator = coordinator
+        super.init(scrollView: scrollView, thickness: 104, label: "Line numbers and counts")
+    }
+
+    override func line(at offset: Int) -> Int {
+        coordinator?.document.lines.line(at: offset) ?? 0
+    }
+
+    override func willDrawLines() {
+        guard let document = coordinator?.document else { return }
+        problemLines = Set(document.diagnostics.filter { $0.uri == nil || $0.uri == document.uri }.map(\.range.start.line))
+    }
+
+    override func drawLine(_ line: Int, top: CGFloat, height: CGFloat) {
+        guard let coordinator else { return }
+        drawLine(line, top: top, height: height, problem: problemLines.contains(line), keys: coordinator.document.modulesByLine[line] ?? [], stage: coordinator.stage)
+    }
+
+    private func drawLine(_ line: Int, top: CGFloat, height: CGFloat, problem: Bool, keys: [String], stage: PipelineStage) {
+        let middle = top + height / 2
+        drawNumber(line, middle: middle)
         if problem {
             CodeTheme.error.setFill()
             NSBezierPath(ovalIn: NSRect(x: 4, y: middle - 3, width: 6, height: 6)).fill()
@@ -646,6 +750,10 @@ enum CodeTheme {
     static let error = NSColor(hex: 0xFF4D5E)
     static let warning = NSColor(hex: 0xFF9A3D)
     static let spark = NSColor(hex: 0x39D5FF, alpha: 0.8)
+    /// Behind the lines of the class the code level shows, among the others in its file.
+    static let classLines = NSColor(hex: 0x39D5FF, alpha: 0.045)
+    /// The mark beside the inflection a module runs.
+    static let runsHere = NSColor(hex: 0x6CFF8E)
 
     static let plain: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: text]
     static let lineNumber: [NSAttributedString.Key: Any] = [

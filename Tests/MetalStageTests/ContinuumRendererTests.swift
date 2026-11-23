@@ -6,12 +6,13 @@ import MeepClient
 import Simulation
 import Stage
 import Testing
+import TestSupport
 @testable import MetalStage
 
 /// The Continuum drawn whole, off screen, at each level of the zoom: the mesh of hosts, one host's districts, and one
 /// pipeline's tiles. With `SYNESTHESIA_SNAPSHOTS` set, each is saved as a PNG.
 @MainActor
-@Suite(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "needs a GPU"))
+@Suite(.simulatedHosts, .enabled(if: MTLCreateSystemDefaultDevice() != nil, "needs a GPU"))
 struct ContinuumRendererTests {
     let size = CGSize(width: 1400, height: 860)
 

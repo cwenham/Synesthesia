@@ -49,6 +49,15 @@ final class AppViewer: Viewer {
         workspace.probes(for: pipeline)
     }
 
+    var code: CodeLevel? { workspace.code }
+
+    var sources: SourceLibrary? { workspace.sources }
+
+    func showCode(of pipeline: MeepPipeline, host: MeepHost, at key: String, inflection: String?) -> CodeLevel? {
+        reveal()
+        return workspace.showCode(of: pipeline, host: host, at: key, inflection: inflection)
+    }
+
     /// Opens the pipeline with the message in the composer, and waits for the person to send it or not.
     func inject(_ body: InjectBody, into key: String, of pipeline: MeepPipeline, on host: MeepHost, timeout: Duration) async -> InjectionResult {
         reveal()
